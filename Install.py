@@ -259,6 +259,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from datetime import datetime
 import subprocess
+import time
 
 # User requested token for scripts
 # mvy9amhku0l3b2kq0cemzduy6czqm8
@@ -266,54 +267,55 @@ import subprocess
 # --- UNINSTALLER LOGIC ---
 def run_uninstall(parent_window):
     """Contains all logic for uninstalling the application."""
-    try:
-        import psutil
-    except ImportError:
-        psutil = None
-
-    def remove_startup_file():
-        startup_folder = os.path.join(os.getenv('APPDATA'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
-        vbs_path = os.path.join(startup_folder, 'launch_roblox_font_manager.vbs')
-        try:
-            if os.path.exists(vbs_path):
-                os.remove(vbs_path)
-        except Exception:
-            pass # Fail silently
-
-    def terminate_running_script():
-        if not psutil: return
-        for proc in psutil.process_iter(['pid', 'cmdline']):
-            try:
-                if proc.info['cmdline'] and 'auto_font_manager' in ' '.join(proc.info['cmdline']):
-                    psutil.Process(proc.info['pid']).terminate()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-
+    
     install_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-    if not messagebox.askyesno("Confirm Uninstall", f"Are you sure you want to uninstall from:\n\n{install_dir}?", parent=parent_window):
+    if not messagebox.askyesno("Confirm Uninstall", f"This will terminate the font manager and permanently delete all of its files from:\n\n{install_dir}\n\nAre you sure you want to continue?", parent=parent_window):
         return
 
     try:
-        terminate_running_script()
-        remove_startup_file()
-        
-        # Self-deletion logic using a batch file
-        deleter_bat_path = os.path.join(os.getenv('TEMP'), 'rfm_deleter.bat')
-        with open(deleter_bat_path, 'w', encoding='utf-8') as f:
-            f.write(f'@echo off\n')
-            f.write(f'echo Uninstalling Roblox Font Manager...\n')
-            f.write(f'ping 127.0.0.1 -n 4 > nul\n') # Wait for this script to close
-            f.write(f'rd /s /q "{install_dir}"\n')
-            f.write(f'echo Uninstallation complete.\n')
-            f.write(f'ping 127.0.0.1 -n 2 > nul\n')
-            f.write(f'del "%~f0"\n') # Delete the batch file itself
-        
-        subprocess.Popen(f'"{deleter_bat_path}"', shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        parent_window.destroy()
-        sys.exit()
+        # Get the PID of the current process (the manager hub)
+        hub_pid = os.getpid()
 
+        # Write a batch script to handle termination and deletion
+        deleter_bat_path = os.path.join(os.getenv('TEMP'), 'rfm_uninstaller.bat')
+        with open(deleter_bat_path, 'w', encoding='utf-8') as f:
+            f.write('@echo off\n')
+            f.write('echo.\n')
+            f.write('echo Closing Roblox Font Manager...\n')
+            # Terminate the manager hub itself
+            f.write(f'taskkill /F /PID {hub_pid}\n')
+            # Terminate any running auto-manager scripts
+            f.write('taskkill /F /IM pythonw.exe /FI "WINDOWTITLE eq Roblox Font Manager Auto"\n')
+            f.write('echo.\n')
+            f.write('echo Removing scheduled tasks and shortcuts...\n')
+            # Remove Startup VBS
+            f.write(f'del "{os.path.join(os.getenv("APPDATA"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "launch_roblox_font_manager.vbs")}" 2>nul\n')
+            # Remove Desktop Shortcut
+            f.write(f'del "{os.path.join(os.path.expanduser("~"), "Desktop", "Roblox Font Manager.lnk")}" 2>nul\n')
+            f.write('echo.\n')
+            f.write('echo Removing installation files...\n')
+            # Wait for processes to fully terminate before deleting folder
+            f.write('ping 127.0.0.1 -n 4 > nul\n')
+            # Loop to ensure the directory is deleted
+            f.write(f':AttemptDelete\n')
+            f.write(f'rd /s /q "{install_dir}"\n')
+            f.write(f'if exist "{install_dir}" (\n')
+            f.write(f'  ping 127.0.0.1 -n 2 > nul\n')
+            f.write(f'  goto AttemptDelete\n')
+            f.write(f')\n')
+            f.write('echo.\n')
+            f.write('echo Uninstallation complete.\n')
+            f.write('ping 127.0.0.1 -n 3 > nul\n')
+            # Self-delete the batch file
+            f.write(f'del "%~f0"\n')
+
+        # Launch the batch script completely detached from the Python process
+        subprocess.Popen(f'"{deleter_bat_path}"', shell=True, creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW)
+        
+        # The batch script will kill this process, so we just let it run
+        
     except Exception as e:
-        messagebox.showerror("Error", f"An error occurred during uninstallation:\n{e}", parent=parent_window)
+        messagebox.showerror("Uninstallation Error", f"An error occurred while preparing the uninstaller:\n{e}", parent=parent_window)
 
 # --- MANUAL FONT MANAGER APP ---
 class FontManagerApp:
@@ -756,45 +758,30 @@ class InstallerApp:
 
     def find_python_executable(self):
         self.update_status("Finding Python installation...")
-        
+        try:
+            # Use 'where python' and take the first valid result
+            output = subprocess.check_output('where python', shell=True, text=True, stderr=subprocess.PIPE)
+            paths = output.strip().split('\n')
+            if paths:
+                py_exe = paths[0].strip()
+                print(f"Found Python using 'where' command: {py_exe}")
+                return py_exe
+        except subprocess.CalledProcessError:
+            print("'where python' command failed. Trying manual search...")
+
+        # Fallback to manual search if 'where' fails
         common_paths = [
             os.path.join(os.getenv('LOCALAPPDATA'), 'Programs', 'Python'),
             os.path.join(os.getenv('ProgramFiles'), 'Python')
         ]
-        
         for path in common_paths:
-            if not os.path.isdir(path):
-                continue
-            for folder in os.listdir(path):
-                if folder.lower().startswith('python'):
-                    py_exe = os.path.join(path, folder, 'python.exe')
-                    if os.path.exists(py_exe):
-                        print(f"Found Python at: {py_exe}")
-                        return py_exe
-
-        try:
-            output = subprocess.check_output('where python', shell=True, text=True, stderr=subprocess.PIPE)
-            paths = output.strip().split('\n')
-            for path in paths:
-                if 'WindowsApps' not in path:
-                    py_exe = path.strip()
-                    print(f"Found Python in PATH: {py_exe}")
-                    return py_exe
-        except subprocess.CalledProcessError:
-            pass
-
-        self.update_status("Automatic search failed. Please locate python.exe manually.")
-        messagebox.showinfo("Python Not Found", "Could not automatically find your Python installation. Please locate your python.exe file in the next window.", parent=self.root)
-        
-        python_exe_path = filedialog.askopenfilename(
-            title="Select python.exe",
-            filetypes=[("Python Executable", "python.exe")],
-            initialdir=os.getenv('LOCALAPPDATA')
-        )
-        
-        if python_exe_path and os.path.basename(python_exe_path).lower() == 'python.exe':
-            print(f"User selected Python at: {python_exe_path}")
-            return python_exe_path
+            if os.path.isdir(path):
+                for folder in os.listdir(path):
+                    if folder.lower().startswith('python'):
+                        py_exe = os.path.join(path, folder, 'python.exe')
+                        if os.path.exists(py_exe):
+                            print(f"Found Python via manual search: {py_exe}")
+                            return py_exe
         
         return None
 
@@ -834,19 +821,19 @@ class InstallerApp:
             else:
                 installer_dir = os.path.dirname(os.path.abspath(__file__))
 
-            source_fonts_dir = os.path.join(installer_dir, 'Fonts')
+            source_fonts_zip = os.path.join(installer_dir, 'Fonts.zip')
             
             print(f"Installer is running from: {installer_dir}")
-            print(f"Checking for preset fonts folder at: {source_fonts_dir}")
+            print(f"Checking for preset fonts at: {source_fonts_zip}")
             
-            has_fonts_folder = os.path.isdir(source_fonts_dir)
+            has_fonts_zip = os.path.isfile(source_fonts_zip)
 
-            if not has_fonts_folder:
-                messagebox.showwarning("No Fonts Found", "A 'Fonts' folder was not found next to the installer.\n\nThe program will be installed, but you will need to add fonts manually later.")
+            if not has_fonts_zip:
+                messagebox.showwarning("No Fonts Found", "A 'Fonts.zip' file was not found next to the installer.\n\nThe program will be installed, but you will need to add fonts manually later.")
             
             # Step 1: Find Python (10%)
             python_exe = self.find_python_executable()
-            if not python_exe: raise Exception("Could not find a valid Python installation. Installation cancelled.")
+            if not python_exe: raise Exception("Could not find a Python installation. Please install Python from python.org or the Microsoft Store and try again.")
             pythonw_exe = python_exe.replace('python.exe', 'pythonw.exe')
             if not os.path.exists(pythonw_exe): raise Exception(f"pythonw.exe not found alongside {python_exe}")
             self.progress_bar['value'] = 10; self.root.update_idletasks(); time.sleep(0.2)
@@ -859,36 +846,10 @@ class InstallerApp:
             self.progress_bar['value'] = 20; self.root.update_idletasks(); time.sleep(0.2)
 
             # Step 3: Extract and Copy Preset Fonts (40%)
-            self.update_status("Copying preset fonts...")
+            self.update_status("Extracting preset fonts...")
             
-            source_fonts_dir = os.path.join(installer_dir, 'Fonts')
-            source_fonts_zip = os.path.join(installer_dir, 'Fonts.zip')
-
-            has_fonts_folder = os.path.isdir(source_fonts_dir)
-            has_fonts_zip = os.path.isfile(source_fonts_zip)
-
-            if not has_fonts_folder and not has_fonts_zip:
-                 print("-> No 'Fonts' folder or 'Fonts.zip' found. Skipping preset font copy.")
-            
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Scenario 1: A 'Fonts' folder exists
-                if has_fonts_folder:
-                    print("Searching for preset font ZIP files inside 'Fonts' folder...")
-                    for item in os.listdir(source_fonts_dir):
-                        if item.lower().endswith('.zip'):
-                            zip_path = os.path.join(source_fonts_dir, item)
-                            self.update_status(f"Extracting {item}...")
-                            print(f"-> Found and extracting: {item}")
-                            try:
-                                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                                    zip_ref.extractall(temp_dir)
-                            except zipfile.BadZipFile:
-                                print(f"   [WARNING] Skipping corrupted zip file: {item}")
-                                continue
-                
-                # Scenario 2: Only a 'Fonts.zip' file exists
-                elif has_fonts_zip:
-                    self.update_status(f"Extracting Fonts.zip...")
+            if has_fonts_zip:
+                with tempfile.TemporaryDirectory() as temp_dir:
                     print(f"-> Found and extracting: Fonts.zip")
                     try:
                         with zipfile.ZipFile(source_fonts_zip, 'r') as zip_ref:
@@ -896,35 +857,18 @@ class InstallerApp:
                     except zipfile.BadZipFile:
                         print(f"   [WARNING] Skipping corrupted zip file: Fonts.zip")
 
-                def copy_fonts_from_dir(source_dir, dest_dir):
                     copied_count = 0
-                    for root, _, files in os.walk(source_dir):
+                    for root, _, files in os.walk(temp_dir):
                         for file in files:
                             if file.lower().endswith(('.ttf', '.otf')):
                                 try:
-                                    shutil.copy(os.path.join(root, file), dest_dir)
+                                    shutil.copy(os.path.join(root, file), destination_fonts_dir)
                                     copied_count += 1
                                 except shutil.SameFileError:
                                     pass
-                    return copied_count
-                
-                # Copy everything from the temp directory where zips were extracted
-                print("Copying fonts from temporary extraction directory...")
-                count_from_zip = copy_fonts_from_dir(temp_dir, destination_fonts_dir)
-                print(f"-> Copied {count_from_zip} fonts from ZIP archives.")
-                
-                # If a folder exists, also copy any loose fonts from it
-                if has_fonts_folder:
-                    print("Copying loose fonts from 'Fonts' folder...")
-                    count_from_folder = 0
-                    for item in os.listdir(source_fonts_dir):
-                        if item.lower().endswith(('.ttf', '.otf')):
-                             try:
-                                shutil.copy(os.path.join(source_fonts_dir, item), destination_fonts_dir)
-                                count_from_folder += 1
-                             except shutil.SameFileError:
-                                 pass
-                    print(f"-> Copied {count_from_folder} loose fonts.")
+                    print(f"-> Copied {copied_count} fonts from Fonts.zip.")
+            else:
+                print("-> No 'Fonts.zip' found. Skipping preset font copy.")
 
             self.progress_bar['value'] = 40; self.root.update_idletasks(); time.sleep(0.2)
             
