@@ -1,4 +1,5 @@
 **How to Use**
+
 Open The Installer
 Press Install
 Select A Font Of Your Choice Or Upload Your Own
@@ -27,4 +28,5 @@ How to find python manually: Open cmd, type "where python"
 V1.5: Added Ability To Manually find python if it can't be found 
 
 V2: Added "laptop" support and more realistic loading bar
+
 
