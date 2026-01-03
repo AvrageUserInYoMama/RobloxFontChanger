@@ -3,252 +3,387 @@ import sys
 import shutil
 import subprocess
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from tkinter.font import Font
+from tkinter import ttk, filedialog, messagebox, font as tkfont
 import ctypes
-import traceback
+import threading
 import zipfile
-import tempfile
 import time
+import struct
 
 # --- EMBEDDED SCRIPTS ---
-# The code for the other python files is stored here as strings
-# to be written to files during installation.
 
+# This script runs silently and pops up the menu when Roblox is launched or hotkey is pressed.
 AUTO_MANAGER_CODE = r'''
 import os
-import shutil
 import sys
-import time
+import json
+import shutil
+import ctypes
 import subprocess
-from datetime import datetime
+import threading
 import tkinter as tk
-from tkinter import messagebox, Toplevel, Button, Label
-
-# User requested token for scripts
-# mvy9amhku0l3b2kq0cemzduy6czqm8
+from tkinter import ttk, messagebox, scrolledtext, font as tkfont
+from datetime import datetime
+from ctypes import wintypes
+import time
 
 # --- Dependency Check ---
 try:
     import psutil
 except ImportError:
-    sys.exit("Error: psutil library not found.")
+    sys.exit(1)
 
-# --- Configuration ---
-SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
-SOURCE_FOLDER_NAME = "PLACE YOUR CUSTOM FONT HERE"
-SOURCE_FOLDER_PATH = os.path.join(SCRIPT_DIR, SOURCE_FOLDER_NAME)
-LOG_FILE_PATH = os.path.join(SCRIPT_DIR, "font_manager.log")
-ROBLOX_VERSIONS_PATH = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'Roblox', 'Versions')
-CHECK_INTERVAL_SECONDS = 15
+# ---------------- CONFIG ---------------- #
+BASE_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
+APP_NAME = "Roblox Font & Cursor Manager"
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+FONTS_LIB_DIR = os.path.join(BASE_DIR, "Fonts")
+CURSORS_LIB_DIR = os.path.join(BASE_DIR, "Cursors")
 
-# --- Global State ---
-pending_updates = set()
-session_ignored_versions = set() # Prevents asking for the same version repeatedly in one session
+ROBLOX_URI = "roblox-player:"
+HOTKEY_ID = 1
+MOD_CONTROL = 0x0002
+MOD_NOREPEAT = 0x4000
 
-# --- Logging Setup ---
-def log(message):
-    """Appends a timestamped message to the log file."""
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    log_message = f"[{timestamp}] {message}\n"
-    with open(LOG_FILE_PATH, 'a', encoding='utf-8') as f:
-        f.write(log_message)
-    print(log_message.strip())
+KEYS_MAP = {
+    "F9": (0, 0x78),
+    "F10": (0, 0x79),
+    "F11": (0, 0x7A),
+    "Ctrl + Grave (`)": (MOD_CONTROL, 0xC0)
+}
 
-# --- GUI Dialog ---
-def ask_update_preference(version_name):
-    """Shows a custom dialog box asking the user what to do."""
-    root = tk.Tk()
-    root.title("Roblox Update Detected")
-    
-    window_height = 150
-    window_width = 440
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    x_cordinate = int((screen_width/2) - (window_width/2))
-    y_cordinate = int((screen_height/2) - (window_height/2))
-    root.geometry(f"{window_width}x{window_height}+{x_cordinate}+{y_cordinate}")
-
-    root.resizable(False, False)
-    root.attributes("-topmost", True)
-
-    result = {"choice": "cancel"}
-
-    def on_choice(choice):
-        result["choice"] = choice
-        root.destroy()
-
-    Label(root, text=f"Roblox update detected for version:\n{version_name[:25]}...", font=("Segoe UI", 12)).pack(pady=10)
-    Label(root, text="Apply custom font now, or wait until after you close Roblox?", wraplength=420).pack(pady=5)
-
-    button_frame = tk.Frame(root)
-    button_frame.pack(pady=15)
-
-    Button(button_frame, text="Update Now", width=12, command=lambda: on_choice("now")).pack(side="left", padx=5)
-    Button(button_frame, text="Update Later", width=12, command=lambda: on_choice("later")).pack(side="left", padx=5)
-    Button(button_frame, text="Skip This Version", width=15, command=lambda: on_choice("cancel")).pack(side="left", padx=5)
-
-    root.protocol("WM_DELETE_WINDOW", lambda: on_choice("cancel"))
-    root.mainloop()
-
-    return result["choice"]
-
-# --- Core Functions ---
-def get_source_font():
-    if not os.path.isdir(SOURCE_FOLDER_PATH):
-        try:
-            os.makedirs(SOURCE_FOLDER_PATH)
-            log(f"Source folder created at: {SOURCE_FOLDER_PATH}")
-        except OSError: return None
-    
+def load_config():
+    defaults = {"font": None, "cursor_set": None, "show_on_start": True, "hotkey": "F9"}
+    if not os.path.exists(CONFIG_FILE):
+        return defaults
     try:
-        files = [f for f in os.listdir(SOURCE_FOLDER_PATH) if os.path.isfile(os.path.join(SOURCE_FOLDER_PATH, f))]
-        if len(files) == 1: return os.path.join(SOURCE_FOLDER_PATH, files[0])
-    except Exception as e: log(f"ERROR: Could not access source folder: {e}")
-    return None
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            for k, v in defaults.items():
+                if k not in data: data[k] = v
+            return data
+    except:
+        return defaults
 
-def get_roblox_versions():
-    if not os.path.isdir(ROBLOX_VERSIONS_PATH): return set()
-    return {d for d in os.listdir(ROBLOX_VERSIONS_PATH) if os.path.isdir(os.path.join(ROBLOX_VERSIONS_PATH, d))}
+def save_config(cfg):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=4)
 
-def restart_roblox(new_version_folder_path):
-    log("Attempting to restart Roblox...")
-    for proc in psutil.process_iter(['pid', 'name']):
-        if proc.info['name'] == "RobloxPlayerBeta.exe":
+# ---------------- ROBLOX UTILS ---------------- #
+
+def restart_roblox():
+    found = False
+    for proc in psutil.process_iter(['name']):
+        try:
+            pname = proc.name().lower()
+            if "roblox" in pname and not any(x in pname for x in ["manager", "crash", "launcher"]):
+                proc.terminate()
+                found = True
+        except (psutil.NoSuchProcess, psutil.AccessDenied): continue
+    if found: time.sleep(2)
+    subprocess.Popen(["cmd", "/c", "start", ROBLOX_URI], shell=True)
+
+def apply_font(font_path):
+    roblox_path = os.path.join(os.getenv("LOCALAPPDATA"), "Roblox", "Versions")
+    if not os.path.exists(roblox_path): return
+
+    for root, dirs, files in os.walk(roblox_path):
+        if "Fonts.old" in root: continue
+        if os.path.basename(root).lower() == "fonts" and "content" in root.lower():
+            backup_dir = os.path.join(root, "Fonts.old")
+            os.makedirs(backup_dir, exist_ok=True)
+            for f in files:
+                if f.lower().endswith((".ttf", ".otf")) and not f.lower().startswith("twemoji"):
+                    src = os.path.join(root, f)
+                    back = os.path.join(backup_dir, f)
+                    try:
+                        if not os.path.exists(back): shutil.move(src, back)
+                        shutil.copy2(font_path, src)
+                    except: pass
+
+def apply_cursor_set(set_path):
+    if not set_path or not os.path.isdir(set_path): return
+
+    roblox_path = os.path.join(os.getenv("LOCALAPPDATA"), "Roblox", "Versions")
+    cursor_files = ["ArrowCursor.png", "ArrowFarCursor.png", "IBeamCursor.png"]
+
+    for root, dirs, files in os.walk(roblox_path):
+        if "Cursors.old" in root: continue
+        if os.path.basename(root) == "KeyboardMouse" and "textures" in root.lower():
+            backup_dir = os.path.join(root, "Cursors.old")
+            os.makedirs(backup_dir, exist_ok=True)
+            for c_file in cursor_files:
+                src_in_lib = os.path.join(set_path, c_file)
+                target_in_roblox = os.path.join(root, c_file)
+                if os.path.exists(src_in_lib):
+                    try:
+                        if os.path.exists(target_in_roblox) and not os.path.exists(os.path.join(backup_dir, c_file)):
+                            shutil.move(target_in_roblox, os.path.join(backup_dir, c_file))
+                        shutil.copy2(src_in_lib, target_in_roblox)
+                    except: pass
+
+# ---------------- MAIN UI ---------------- #
+
+class ManagerUI(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title(APP_NAME)
+        self.geometry("700x650")
+        self.resizable(False, False)
+
+        self.cfg = load_config()
+        self.roblox_running_prev = False
+        self.all_fonts = {}
+        self.all_cursor_sets = {}
+        self.trigger_show = False
+        
+        # UI Variables
+        self.font_var = tk.StringVar(value=self.cfg.get("font"))
+        self.cursor_var = tk.StringVar(value=self.cfg.get("cursor_set"))
+        self.hotkey_var = tk.StringVar(value=self.cfg.get("hotkey", "F9"))
+        self.show_var = tk.BooleanVar(value=not self.cfg.get("show_on_start", True))
+        
+        # Thread-safe variable for hotkey (Tkinter vars are unsafe in threads)
+        self.cur_hotkey_val = self.cfg.get("hotkey", "F9")
+
+        self.create_widgets()
+        self.protocol("WM_DELETE_WINDOW", self.hide)
+        self.refresh_libraries()
+        
+        # Start loops
+        self.check_hotkey_trigger() # Runs fast (100ms)
+        self.check_roblox_process() # Runs slow (2000ms)
+        
+        # Start hotkey thread
+        threading.Thread(target=self.hotkey_thread_runner, daemon=True).start()
+
+    def create_widgets(self):
+        nb = ttk.Notebook(self)
+        nb.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Fonts Tab
+        f_tab = ttk.Frame(nb)
+        nb.add(f_tab, text="Fonts")
+        top_f = ttk.Frame(f_tab)
+        top_f.pack(fill="x", padx=10, pady=10)
+        ttk.Label(top_f, text="Select Font:").pack(side="left")
+        self.f_list = ttk.Combobox(top_f, textvariable=self.font_var, state="readonly", width=40)
+        self.f_list.pack(side="left", padx=5)
+        ttk.Button(top_f, text="Add Font...", command=self.add_font_manually).pack(side="left", padx=5)
+
+        # Cursors Tab
+        c_tab = ttk.Frame(nb)
+        nb.add(c_tab, text="Cursors")
+        top_c = ttk.Frame(c_tab)
+        top_c.pack(fill="x", padx=10, pady=10)
+        ttk.Label(top_c, text="Select Cursor Set:").pack(side="left")
+        self.c_list = ttk.Combobox(top_c, textvariable=self.cursor_var, state="readonly", width=40)
+        self.c_list.pack(side="left", padx=5)
+        ttk.Button(top_c, text="Import Set Folder...", command=self.add_cursor_set_manually).pack(side="left", padx=5)
+        ttk.Label(c_tab, text="Required files in folder:\n- ArrowCursor.png\n- ArrowFarCursor.png\n- IBeamCursor.png", justify="left").pack(pady=10, padx=20, anchor="w")
+
+        self.status = ttk.Label(self, text="Status: Scanning for Roblox...", font=("Segoe UI", 10, "italic"))
+        self.status.pack(pady=5)
+
+        settings_frame = ttk.LabelFrame(self, text="Settings", padding=10)
+        settings_frame.pack(fill="x", padx=20, pady=5)
+        h_frame = ttk.Frame(settings_frame)
+        h_frame.pack(fill="x")
+        ttk.Label(h_frame, text="Menu Hotkey:").pack(side="left")
+        self.h_list = ttk.Combobox(h_frame, textvariable=self.hotkey_var, values=list(KEYS_MAP.keys()), state="readonly", width=20)
+        self.h_list.pack(side="left", padx=10)
+        self.h_list.bind("<<ComboboxSelected>>", self.on_hotkey_change)
+        ttk.Checkbutton(settings_frame, text="Do not show again on Roblox start", variable=self.show_var).pack(anchor="w", pady=5)
+        
+        bot = ttk.Frame(self)
+        bot.pack(fill="x", side="bottom", padx=20, pady=20)
+        btns = ttk.Frame(bot)
+        btns.pack(side="right")
+        ttk.Button(btns, text="Apply Changes", command=self.apply).pack(side="left", padx=5)
+        ttk.Button(btns, text="Restart Roblox", command=restart_roblox).pack(side="left", padx=5)
+        ttk.Button(btns, text="Close", command=self.hide).pack(side="left", padx=5)
+
+    def refresh_libraries(self):
+        self.all_fonts = {}
+        if os.path.exists(FONTS_LIB_DIR):
+            for root, dirs, files in os.walk(FONTS_LIB_DIR):
+                for f in files:
+                    if f.lower().endswith(('.ttf', '.otf')):
+                        rel = os.path.relpath(os.path.join(root, f), FONTS_LIB_DIR)
+                        display_name = rel.replace("\\", "/")
+                        self.all_fonts[display_name] = os.path.join(root, f)
+        self.f_list['values'] = sorted(list(self.all_fonts.keys()))
+        
+        self.all_cursor_sets = {}
+        if os.path.exists(CURSORS_LIB_DIR):
+            for root, dirs, files in os.walk(CURSORS_LIB_DIR):
+                if any(f.lower().endswith('.png') for f in files):
+                    if root == CURSORS_LIB_DIR: continue
+                    rel = os.path.relpath(root, CURSORS_LIB_DIR)
+                    display_name = rel.replace("\\", "/")
+                    self.all_cursor_sets[display_name] = root
+        self.c_list['values'] = sorted(list(self.all_cursor_sets.keys()))
+
+    def add_font_manually(self):
+        f = filedialog.askopenfilename(filetypes=[("Font Files", "*.ttf *.otf")])
+        if f:
+            os.makedirs(FONTS_LIB_DIR, exist_ok=True)
+            name = os.path.basename(f)
+            dst = os.path.join(FONTS_LIB_DIR, name)
             try:
-                psutil.Process(proc.info['pid']).terminate()
-                log(f"Closed Roblox process (PID: {proc.info['pid']}).")
-            except psutil.NoSuchProcess: pass
-    
-    time.sleep(3)
-    roblox_exe_path = os.path.join(new_version_folder_path, "RobloxPlayerBeta.exe")
-    if os.path.exists(roblox_exe_path):
+                shutil.copy2(f, dst)
+                self.refresh_libraries()
+                self.font_var.set(name)
+                messagebox.showinfo("Font Added", "Font added to library.")
+            except Exception as e: messagebox.showerror("Error", str(e))
+
+    def add_cursor_set_manually(self):
+        d = filedialog.askdirectory(title="Select Folder containing Cursor PNGs")
+        if d:
+            name = os.path.basename(d)
+            dst = os.path.join(CURSORS_LIB_DIR, name)
+            os.makedirs(dst, exist_ok=True)
+            for f in os.listdir(d):
+                if f.lower().endswith(".png"): shutil.copy2(os.path.join(d, f), dst)
+            self.refresh_libraries()
+            self.cursor_var.set(name)
+            messagebox.showinfo("Set Added", "Cursor set imported.")
+
+    def hotkey_thread_runner(self):
+        user32 = ctypes.windll.user32
+        msg = wintypes.MSG()
+        
+        while True:
+            # Use thread-safe variable instead of Tkinter var
+            hk_name = self.cur_hotkey_val
+            
+            if hk_name in KEYS_MAP:
+                mod, vk = KEYS_MAP[hk_name]
+                user32.UnregisterHotKey(None, HOTKEY_ID)
+                success = user32.RegisterHotKey(None, HOTKEY_ID, mod | MOD_NOREPEAT, vk)
+                if not success:
+                    print(f"Failed to register hotkey: {hk_name}")
+
+            # GetMessageW is blocking, but will wake on hotkey press
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+                if msg.message == 0x0312: # WM_HOTKEY
+                    self.trigger_show = True
+                
+                # Check if hotkey setting changed in UI
+                if self.cur_hotkey_val != hk_name:
+                    break
+            time.sleep(1)
+
+    def on_hotkey_change(self, event):
+        self.cfg["hotkey"] = self.hotkey_var.get()
+        self.cur_hotkey_val = self.hotkey_var.get() # Update thread-safe var
+        save_config(self.cfg)
+
+    def check_hotkey_trigger(self):
+        """Fast loop just for hotkeys (100ms)"""
+        if self.trigger_show:
+            self.trigger_show = False
+            self.show()
+        self.after(100, self.check_hotkey_trigger)
+
+    def check_roblox_process(self):
+        """Slow loop for process scanning (2000ms)"""
         try:
-            subprocess.Popen([roblox_exe_path])
-            log("Relaunching Roblox from the new version folder.")
-        except Exception as e: log(f"Failed to relaunch Roblox: {e}")
-    else: log(f"Error: RobloxPlayerBeta.exe not found in '{new_version_folder_path}'")
+            is_running = False
+            detected_proc_name = ""
+            for p in psutil.process_iter(['name']):
+                try:
+                    pname = p.info['name']
+                    if pname:
+                        pname_lower = pname.lower()
+                        if "roblox" in pname_lower and pname_lower.endswith(".exe"):
+                            if not any(x in pname_lower for x in ["crash", "manager", "launcher"]):
+                                is_running = True
+                                detected_proc_name = pname
+                                break
+                except: continue
+            
+            # Roblox Opened
+            if is_running and not self.roblox_running_prev:
+                if self.cfg.get("show_on_start", True):
+                    self.show()
+                
+                if self.needs_upd():
+                    self.status.config(text="Status: Update Detected! (Re-apply mods)", foreground="orange")
+                else:
+                    self.status.config(text="Status: Mods are active", foreground="green")
+            
+            # Roblox Closed
+            if not is_running and self.roblox_running_prev:
+                self.hide()
+            
+            self.roblox_running_prev = is_running
+        except: pass
 
-def replace_fonts(target_fonts_folder, source_font):
-    log(f"--- Starting replacement for '{os.path.basename(os.path.dirname(os.path.dirname(target_fonts_folder)))}' ---")
-    try:
-        backup_folder_path = os.path.join(target_fonts_folder, "Fonts.old", datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
-        os.makedirs(backup_folder_path, exist_ok=True)
-        
-        font_ext = ('.ttf', '.otf')
-        
-        original_fonts = [f for f in os.listdir(target_fonts_folder) if os.path.isfile(os.path.join(target_fonts_folder, f)) and f.lower().endswith(font_ext)]
-        
-        if not original_fonts:
-            log("No font files found in the target directory to replace.")
-            return True
+        self.after(2000, self.check_roblox_process)
 
-        for filename in original_fonts:
-            shutil.move(os.path.join(target_fonts_folder, filename), os.path.join(backup_folder_path, filename))
-        log(f"Backed up {len(original_fonts)} original font file(s).")
-
-        replaced_count = 0
-        for filename in original_fonts:
-            original_backup_path = os.path.join(backup_folder_path, filename)
-            new_file_path = os.path.join(target_fonts_folder, filename)
-
-            if filename.lower().startswith('twemoji'):
-                shutil.copy2(original_backup_path, new_file_path)
-                log(f"Restored original emoji font: {filename}")
-            else:
-                shutil.copy2(source_font, new_file_path)
-                replaced_count += 1
+    def needs_upd(self):
+        rp = os.path.join(os.getenv("LOCALAPPDATA"), "Roblox", "Versions")
+        if not os.path.exists(rp): return False
         
-        log(f"Successfully replaced {replaced_count} file(s).")
-        return True
-    except Exception as e:
-        log(f"CRITICAL: Replacement failed. Error: {e}")
+        try:
+            versions = []
+            for d in os.listdir(rp):
+                vp = os.path.join(rp, d)
+                if os.path.isdir(vp) and d.startswith("version-"):
+                    files = os.listdir(vp)
+                    if any(f.lower().endswith(".exe") for f in files):
+                        versions.append(vp)
+            
+            if not versions: return False
+            latest_version = max(versions, key=os.path.getmtime)
+            
+            font_dir = os.path.join(latest_version, "content", "fonts")
+            if os.path.exists(font_dir):
+                 if not os.path.exists(os.path.join(font_dir, "Fonts.old")): return True
+
+            cursor_dir = os.path.join(latest_version, "content", "textures", "Cursors", "KeyboardMouse")
+            if os.path.exists(cursor_dir):
+                if not os.path.exists(os.path.join(cursor_dir, "Cursors.old")): return True
+        except: pass
+            
         return False
 
-# --- Main Monitoring Loop ---
-def main():
-    log("--- Automatic Font Manager Started ---")
-    log("Monitoring for Roblox process and new versions...")
-    
-    is_roblox_running_previously = False
-
-    while True:
-        try:
-            is_roblox_running_now = any(p.name() == "RobloxPlayerBeta.exe" for p in psutil.process_iter(['name']))
-
-            if is_roblox_running_now:
-                if not is_roblox_running_previously:
-                    log("RobloxPlayerBeta.exe detected. Actively monitoring for updates.")
-                is_roblox_running_previously = True
-
-                updatable_versions = []
-                current_versions = get_roblox_versions()
-
-                for version in current_versions:
-                    if version in session_ignored_versions:
-                        continue 
-
-                    fonts_folder = os.path.join(ROBLOX_VERSIONS_PATH, version, 'content', 'fonts')
-                    backup_folder = os.path.join(fonts_folder, 'Fonts.old')
-
-                    if os.path.isdir(fonts_folder) and not os.path.isdir(backup_folder):
-                        updatable_versions.append(version)
-                
-                if updatable_versions:
-                    log(f"Detected {len(updatable_versions)} version(s) needing font update.")
-                    source_font = get_source_font()
-
-                    if not source_font:
-                        log("Found updatable version(s), but no source font is ready. Skipping.")
-                        for v in updatable_versions: session_ignored_versions.add(v)
-                    else:
-                        log(f"Source font is ready: {os.path.basename(source_font)}")
-                        
-                        latest_version_to_update = sorted(updatable_versions, reverse=True)[0]
-                        
-                        user_choice = ask_update_preference(latest_version_to_update)
-                        log(f"User selected: '{user_choice.upper()}' for version '{latest_version_to_update}'")
-                        
-                        target_fonts_folder = os.path.join(ROBLOX_VERSIONS_PATH, latest_version_to_update, 'content', 'fonts')
-                        
-                        if user_choice == "now":
-                            if replace_fonts(target_fonts_folder, source_font):
-                                version_folder = os.path.dirname(os.path.dirname(target_fonts_folder))
-                                restart_roblox(version_folder)
-                            session_ignored_versions.add(latest_version_to_update)
-                        
-                        elif user_choice == "later":
-                            pending_updates.add(latest_version_to_update)
-                            session_ignored_versions.add(latest_version_to_update)
-                            log(f"'{latest_version_to_update}' added to the queue for later.")
-                        
-                        elif user_choice == "cancel":
-                            session_ignored_versions.add(latest_version_to_update)
-
-            else: # Roblox not running
-                if is_roblox_running_previously:
-                    log("Roblox process no longer running. Checking for pending updates...")
-                    if pending_updates:
-                        source_font = get_source_font()
-                        if not source_font:
-                             log("Cannot process pending updates: no source font is ready.")
-                        else:
-                            log(f"Processing {len(pending_updates)} pending update(s).")
-                            for version in list(pending_updates):
-                                target_fonts_folder = os.path.join(ROBLOX_VERSIONS_PATH, version, 'content', 'fonts')
-                                if os.path.isdir(target_fonts_folder):
-                                    replace_fonts(target_fonts_folder, source_font)
-                                pending_updates.remove(version)
-                            log("All pending updates completed.")
-                is_roblox_running_previously = False
+    def apply(self):
+        selected_font_display = self.font_var.get()
+        selected_cursor_display = self.cursor_var.get()
+        
+        self.cfg["font"] = selected_font_display
+        self.cfg["cursor_set"] = selected_cursor_display
+        self.cfg["show_on_start"] = not self.show_var.get()
+        save_config(self.cfg)
+        
+        if selected_font_display in self.all_fonts:
+            apply_font(self.all_fonts[selected_font_display])
+        if selected_cursor_display in self.all_cursor_sets:
+            apply_cursor_set(self.all_cursor_sets[selected_cursor_display])
             
-            time.sleep(CHECK_INTERVAL_SECONDS)
-        except Exception as e:
-            log(f"An unexpected error occurred in the main loop: {e}")
-            time.sleep(60)
+        self.status.config(text="Status: Changes Applied!", foreground="green")
+        messagebox.showinfo("Success", "Changes applied. Please restart Roblox.")
+
+    def hide(self): 
+        self.withdraw()
+
+    def show(self):
+        self.deiconify()
+        self.attributes("-topmost", True)
+        self.lift()
+        self.focus_force()
+        try:
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except: pass
+        self.attributes("-topmost", False)
 
 if __name__ == "__main__":
-    main()
+    app = ManagerUI()
+    app.withdraw()
+    app.mainloop()
 '''
 
 MANAGER_HUB_CODE = r'''
@@ -256,685 +391,394 @@ import os
 import shutil
 import sys
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
-from datetime import datetime
+from tkinter import ttk, filedialog, messagebox
 import subprocess
-import time
 
-# User requested token for scripts
-# mvy9amhku0l3b2kq0cemzduy6czqm8
-
-# --- UNINSTALLER LOGIC ---
 def run_uninstall(parent_window):
-    """Contains all logic for uninstalling the application."""
-    
     install_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-    if not messagebox.askyesno("Confirm Uninstall", f"This will terminate the font manager and permanently delete all of its files from:\n\n{install_dir}\n\nAre you sure you want to continue?", parent=parent_window):
-        return
-
+    if not messagebox.askyesno("Confirm Uninstall", "Uninstall and remove all files?"): return
     try:
-        # Get the PID of the current process (the manager hub)
         hub_pid = os.getpid()
-
-        # Write a batch script to handle termination and deletion
-        deleter_bat_path = os.path.join(os.getenv('TEMP'), 'rfm_uninstaller.bat')
-        with open(deleter_bat_path, 'w', encoding='utf-8') as f:
-            f.write('@echo off\n')
-            f.write('echo.\n')
-            f.write('echo Closing Roblox Font Manager...\n')
-            # Terminate the manager hub itself
-            f.write(f'taskkill /F /PID {hub_pid}\n')
-            # Terminate any running auto-manager scripts
-            f.write('taskkill /F /IM pythonw.exe /FI "WINDOWTITLE eq Roblox Font Manager Auto"\n')
-            f.write('echo.\n')
-            f.write('echo Removing scheduled tasks and shortcuts...\n')
-            # Remove Startup VBS
+        bat = os.path.join(os.getenv('TEMP'), 'rfm_uninstaller.bat')
+        with open(bat, 'w', encoding='utf-8') as f:
+            f.write(f'@echo off\n')
+            f.write(f'echo Uninstalling Roblox Font Manager...\n')
+            f.write(f'taskkill /F /PID {hub_pid} >nul 2>&1\n')
+            f.write('taskkill /F /IM pythonw.exe /FI "WINDOWTITLE eq Roblox Font & Cursor Manager" >nul 2>&1\n')
             f.write(f'del "{os.path.join(os.getenv("APPDATA"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "launch_roblox_font_manager.vbs")}" 2>nul\n')
-            # Remove Desktop Shortcut
-            f.write(f'del "{os.path.join(os.path.expanduser("~"), "Desktop", "Roblox Font Manager.lnk")}" 2>nul\n')
-            f.write('echo.\n')
-            f.write('echo Removing installation files...\n')
-            # Wait for processes to fully terminate before deleting folder
-            f.write('ping 127.0.0.1 -n 4 > nul\n')
-            # Loop to ensure the directory is deleted
-            f.write(f':AttemptDelete\n')
+            f.write(f'del "{os.path.join(os.path.expanduser("~"), "Desktop", "Roblox Font Manager Hub.lnk")}" 2>nul\n')
+            f.write('ping 127.0.0.1 -n 5 > nul\n')
             f.write(f'rd /s /q "{install_dir}"\n')
-            f.write(f'if exist "{install_dir}" (\n')
-            f.write(f'  ping 127.0.0.1 -n 2 > nul\n')
-            f.write(f'  goto AttemptDelete\n')
-            f.write(f')\n')
-            f.write('echo.\n')
-            f.write('echo Uninstallation complete.\n')
-            f.write('ping 127.0.0.1 -n 3 > nul\n')
-            # Self-delete the batch file
             f.write(f'del "%~f0"\n')
-
-        # Launch the batch script completely detached from the Python process
-        subprocess.Popen(f'"{deleter_bat_path}"', shell=True, creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW)
-        
-        # The batch script will kill this process, so we just let it run
-        
-    except Exception as e:
-        messagebox.showerror("Uninstallation Error", f"An error occurred while preparing the uninstaller:\n{e}", parent=parent_window)
-
-# --- MANUAL FONT MANAGER APP ---
-class FontManagerApp:
-    def __init__(self, parent_window):
-        self.win = tk.Toplevel(parent_window)
-        self.win.title("Font Manager (Manual)")
-        self.win.geometry("600x500")
-        self.win.resizable(False, True)
-
-        self.source_file_path_var = tk.StringVar()
-        self.target_folder_path_var = tk.StringVar()
-        self.selected_backup_var = tk.StringVar()
-        
-        self.source_folder_name = "PLACE YOUR CUSTOM FONT HERE"
-        self.script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-        
-        self.source_folder_path = os.path.join(self.script_dir, self.source_folder_name)
-        self.history_filename = "font_manager_history.txt"
-        self.history_filepath = os.path.join(self.script_dir, self.history_filename)
-        
-        self.last_source_status = None
-        self.current_source_file = None
-        self.directory_history = self._load_history()
-
-        self._setup_gui()
-        
-        self.monitor_source_folder()
-        self.show_frame(self.main_menu_frame)
-        self.win.transient(parent_window)
-        self.win.grab_set()
-
-    def _setup_gui(self):
-        container = ttk.Frame(self.win, padding=15)
-        container.pack(fill=tk.BOTH, expand=True)
-        container.grid_rowconfigure(0, weight=1)
-        container.grid_columnconfigure(0, weight=1)
-
-        self.main_menu_frame = ttk.Frame(container)
-        self.replace_frame = ttk.Frame(container)
-        self.undo_frame = ttk.Frame(container)
-
-        for frame in (self.main_menu_frame, self.replace_frame, self.undo_frame):
-            frame.grid(row=0, column=0, sticky='nsew')
-
-        self._create_main_menu_frame()
-        self._create_replace_frame()
-        self._create_undo_frame()
-
-        log_frame = ttk.LabelFrame(self.win, text="Log", padding=(10, 5))
-        log_frame.pack(side="bottom", fill="x", expand=False, padx=15, pady=(0, 15))
-        self.log_widget = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state='disabled', height=8)
-        self.log_widget.pack(fill="x", expand=True)
-
-    def show_frame(self, frame_to_show):
-        frame_to_show.tkraise()
-
-    def _create_main_menu_frame(self):
-        frame = self.main_menu_frame
-        frame.columnconfigure(0, weight=1)
-        ttk.Label(frame, text="Manual Tools", font=("Helvetica", 14)).pack(pady=20)
-        
-        replace_btn = ttk.Button(frame, text="Replace Fonts", command=lambda: self.show_frame(self.replace_frame))
-        replace_btn.pack(fill='x', ipady=10, pady=5, padx=50)
-
-        undo_btn = ttk.Button(frame, text="Undo / Restore from Backup", command=lambda: self.show_frame(self.undo_frame))
-        undo_btn.pack(fill='x', ipady=10, pady=5, padx=50)
-
-        ttk.Button(frame, text="Close", command=self.win.destroy).pack(pady=10)
-
-    def _create_replace_frame(self):
-        frame = self.replace_frame
-        ttk.Label(frame, text="Replace Fonts", font=("Helvetica", 12, "bold")).pack(pady=(0, 10))
-        
-        source_frame = ttk.LabelFrame(frame, text="1. Source Font File (Live Status)", padding=10)
-        source_frame.pack(fill='x', pady=5)
-        ttk.Entry(source_frame, textvariable=self.source_file_path_var, state='readonly').pack(fill='x')
-
-        target_frame = ttk.LabelFrame(frame, text="2. Select Target Folder", padding=10)
-        target_frame.pack(fill='x', pady=5)
-        target_entry = ttk.Entry(target_frame, textvariable=self.target_folder_path_var, state='readonly')
-        target_entry.pack(side='left', fill='x', expand=True)
-        ttk.Button(target_frame, text="Browse...", command=self.select_target_folder).pack(side='right', padx=(5,0))
-
-        ttk.Button(frame, text="Perform Replacement", command=self.run_replacement_process).pack(fill='x', ipady=8, pady=10)
-        ttk.Button(frame, text="« Back to Menu", command=lambda: self.show_frame(self.main_menu_frame)).pack(fill='x', ipady=2)
-
-    def _create_undo_frame(self):
-        frame = self.undo_frame
-        ttk.Label(frame, text="Undo / Restore", font=("Helvetica", 12, "bold")).pack(pady=(0, 10))
-        
-        target_frame = ttk.LabelFrame(frame, text="1. Select Target Folder", padding=10)
-        target_frame.pack(fill='x', pady=5)
-        
-        self.history_combobox = ttk.Combobox(target_frame, textvariable=self.target_folder_path_var, values=self.directory_history)
-        self.history_combobox.pack(side='left', fill='x', expand=True)
-        self.history_combobox.bind("<<ComboboxSelected>>", self._on_history_select)
-        
-        ttk.Button(target_frame, text="Browse...", command=self.select_target_folder).pack(side='right', padx=(5,0))
-
-        backup_frame = ttk.LabelFrame(frame, text="2. Choose Backup to Restore", padding=10)
-        backup_frame.pack(fill='x', pady=5)
-        self.backup_menu = ttk.OptionMenu(backup_frame, self.selected_backup_var, "No Target Selected")
-        self.backup_menu.pack(fill='x')
-        self.backup_menu.config(state='disabled')
-
-        self.undo_button = ttk.Button(frame, text="Restore This Backup", command=self.run_undo_process)
-        self.undo_button.pack(fill='x', ipady=8, pady=10)
-        self.undo_button.config(state='disabled')
-        ttk.Button(frame, text="« Back to Menu", command=lambda: self.show_frame(self.main_menu_frame)).pack(fill='x', ipady=2)
-
-    def _load_history(self):
-        if not os.path.exists(self.history_filepath): return []
-        try:
-            with open(self.history_filepath, 'r', encoding='utf-8') as f:
-                return [line.strip() for line in f if line.strip()]
-        except Exception as e:
-            self.log(f"Warning: Could not load history file. {e}")
-            return []
-    
-    def _save_to_history(self, directory_path):
-        if directory_path not in self.directory_history:
-            self.directory_history.insert(0, directory_path)
-            try:
-                with open(self.history_filepath, 'w', encoding='utf-8') as f: f.write("\n".join(self.directory_history))
-                self.history_combobox['values'] = self.directory_history
-            except Exception as e: self.log(f"Warning: Could not save to history file. {e}")
-    
-    def _on_history_select(self, event):
-        self.scan_for_backups()
-    
-    def log(self, message):
-        self.log_widget.config(state='normal')
-        self.log_widget.insert(tk.END, message + "\n")
-        self.log_widget.see(tk.END)
-        self.log_widget.config(state='disabled')
-        self.win.update_idletasks()
-
-    def monitor_source_folder(self):
-        if not os.path.isdir(self.source_folder_path):
-            try:
-                os.makedirs(self.source_folder_path)
-                self.log(f"Source folder created at: {self.source_folder_path}")
-            except Exception: pass
-        try:
-            source_files = [f for f in os.listdir(self.source_folder_path) if os.path.isfile(os.path.join(self.source_folder_path, f))]
-        except Exception:
-            self.source_file_path_var.set("CRITICAL: Cannot access source folder.")
-            return
-
-        status, msg = "", ""
-        if len(source_files) == 0: status, self.current_source_file, msg = "waiting", None, "Waiting for a font file..."
-        elif len(source_files) > 1: status, self.current_source_file, msg = "multiple_files", None, "ERROR: Too many files found."
-        else:
-            self.current_source_file = os.path.join(self.source_folder_path, source_files[0])
-            status, msg = f"ok:{self.current_source_file}", self.current_source_file
-        
-        self.source_file_path_var.set(os.path.basename(msg))
-
-        if status != self.last_source_status:
-            if status == "waiting": self.log("Source folder is empty. Waiting...")
-            elif status == "multiple_files": self.log("ERROR: Multiple files detected in source folder.")
-            elif status.startswith("ok:"): self.log(f"Source font detected: {os.path.basename(self.current_source_file)}")
-            self.last_source_status = status
-        
-        if self.win.winfo_exists():
-            self.win.after(5000, self.monitor_source_folder)
-    
-    def select_target_folder(self):
-        folder_selected = filedialog.askdirectory(title="Select the folder", parent=self.win)
-        if folder_selected:
-            if os.path.basename(folder_selected) == "Fonts.old":
-                self.log("💡 'Fonts.old' was selected. Auto-correcting to the parent folder.")
-                folder_selected = os.path.dirname(folder_selected)
-            self.target_folder_path_var.set(folder_selected)
-            self.log(f"Target folder set to: {folder_selected}")
-            self.scan_for_backups()
-    
-    def scan_for_backups(self):
-        self.backup_menu.config(state='disabled')
-        self.undo_button.config(state='disabled')
-        self.selected_backup_var.set("No backups found")
-        
-        base_backup_dir = os.path.join(self.target_folder_path_var.get(), "Fonts.old")
-        if os.path.isdir(base_backup_dir):
-            try:
-                backups = sorted([d for d in os.listdir(base_backup_dir) if os.path.isdir(os.path.join(base_backup_dir, d))], reverse=True)
-                if backups:
-                    menu = self.backup_menu["menu"]
-                    menu.delete(0, "end")
-                    for backup in backups:
-                        menu.add_command(label=backup, command=lambda v=backup: self.selected_backup_var.set(v))
-                    self.selected_backup_var.set(backups[0])
-                    self.backup_menu.config(state='normal')
-                    self.undo_button.config(state='normal')
-                    self.log(f"Found {len(backups)} backup session(s).")
-                    return
-            except Exception as e: self.log(f"Error scanning backups: {e}")
-        self.log("No valid backups found in 'Fonts.old' folder.")
-
-    def run_replacement_process(self):
-        if not self.current_source_file: messagebox.showerror("Error", "Source font is not ready.", parent=self.win); return
-        target_folder = self.target_folder_path_var.get()
-        if not target_folder or not os.path.isdir(target_folder): messagebox.showerror("Error", "Please select a valid target folder first.", parent=self.win); return
-        if not messagebox.askyesno("Confirmation", f"This will replace all fonts in:\n'{target_folder}'\n\nwith:\n'{os.path.basename(self.current_source_file)}'\n\nA new backup will be created. Proceed?", parent=self.win): self.log("Replacement cancelled."); return
-        
-        self.log("\n--- Starting manual replacement ---")
-        try:
-            backup_folder_path = os.path.join(target_folder, "Fonts.old", datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
-            os.makedirs(backup_folder_path, exist_ok=True)
-            self.log(f"Creating backup: {os.path.basename(backup_folder_path)}")
-            
-            font_ext = ('.ttf', '.otf')
-            replaced_count = 0
-            for filename in os.listdir(target_folder):
-                file_path = os.path.join(target_folder, filename)
-                if os.path.isfile(file_path) and filename.lower().endswith(font_ext):
-                    if not filename.lower().startswith('twemoji'):
-                        shutil.move(file_path, os.path.join(backup_folder_path, filename))
-                        shutil.copy2(self.current_source_file, file_path)
-                        replaced_count += 1
-            
-            self.log(f"Successfully replaced {replaced_count} file(s).")
-            messagebox.showinfo("Success", f"Process finished! Replaced {replaced_count} file(s).", parent=self.win)
-            self._save_to_history(target_folder)
-            self.scan_for_backups()
-        except Exception as e: messagebox.showerror("Error", f"Replacement failed: {e}", parent=self.win); self.log(f"ERROR: {e}")
-
-    def run_undo_process(self):
-        target_folder, selected_backup = self.target_folder_path_var.get(), self.selected_backup_var.get()
-        if not target_folder or selected_backup in ["No Target Selected", "No backups found"]: messagebox.showerror("Error", "Select a valid target and backup session.", parent=self.win); return
-        backup_path = os.path.join(target_folder, "Fonts.old", selected_backup)
-        if not os.path.isdir(backup_path): messagebox.showerror("Error", f"Backup folder not found:\n{backup_path}", parent=self.win); return
-        if not messagebox.askyesno("Confirmation", f"This will restore all files from:\n'{selected_backup}'\n\nThis will overwrite current fonts in the target folder. Proceed?", parent=self.win): self.log("Undo cancelled."); return
-        
-        self.log(f"\n--- Starting Undo from '{selected_backup}' ---")
-        try:
-            files_to_restore = [f for f in os.listdir(backup_path) if os.path.isfile(os.path.join(backup_path, f))]
-            if not files_to_restore: messagebox.showinfo("Information", "Backup folder is empty.", parent=self.win); self.log("Backup is empty."); return
-            
-            for filename in files_to_restore: shutil.move(os.path.join(backup_path, filename), os.path.join(target_folder, filename))
-            self.log(f"Restored {len(files_to_restore)} file(s).")
-            messagebox.showinfo("Success", f"Successfully restored {len(files_to_restore)} file(s).", parent=self.win)
-            
-            if messagebox.askyesno("Cleanup", f"Remove the now-empty backup folder '{selected_backup}'?", parent=self.win):
-                os.rmdir(backup_path); self.log(f"Removed empty backup: {selected_backup}")
-            self.scan_for_backups()
-        except Exception as e: messagebox.showerror("Error", f"Undo failed: {e}", parent=self.win); self.log(f"ERROR: {e}")
-
-# --- MAIN HUB APPLICATION ---
-class ManagerHubApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Roblox Font Manager")
-        self.root.geometry("400x200")
-        self.root.resizable(False, False)
-        
-        frame = ttk.Frame(root, padding=20)
-        frame.pack(fill="both", expand=True)
-
-        ttk.Label(frame, text="Management Hub", font=("Segoe UI", 16, "bold")).pack(pady=10)
-
-        ttk.Button(frame, text="Manual Font Tools", command=self.open_manual_tool).pack(fill='x', ipady=8, pady=5)
-        ttk.Button(frame, text="Uninstall", command=lambda: run_uninstall(self.root)).pack(fill='x', ipady=8, pady=5)
-
-    def open_manual_tool(self):
-        self.root.withdraw()
-        app = FontManagerApp(self.root)
-        app.win.wait_window()
-        self.root.deiconify()
+        subprocess.Popen(f'"{bat}"', shell=True, creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW)
+        parent_window.destroy()
+    except: pass
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = ManagerHubApp(root)
+    root.title("Roblox Font Manager Hub")
+    root.geometry("400x200")
+    ttk.Label(root, text="Manager Hub & Uninstaller", font=("Segoe UI", 14, "bold")).pack(pady=20)
+    ttk.Button(root, text="Uninstall Application", command=lambda: run_uninstall(root)).pack(fill='x', pady=10, padx=50)
+    ttk.Button(root, text="Close", command=root.destroy).pack(pady=10)
     root.mainloop()
 '''
 
-# --- INSTALLER APP ---
+# --- INSTALLER CLASSES ---
 
 class FontChooserApp:
     def __init__(self, parent, install_dir):
         self.win = tk.Toplevel(parent)
-        self.win.title("Step 2: Choose Your Font")
-        self.win.geometry("600x650")
-        self.win.resizable(False, False)
-        self.win.protocol("WM_DELETE_WINDOW", self._on_close)
-
+        self.win.title("Step 2: Setup Your Library")
+        self.win.geometry("750x750")
         self.install_dir = install_dir
         self.fonts_dir = os.path.join(install_dir, "Fonts")
-        self.target_dir = os.path.join(install_dir, "PLACE YOUR CUSTOM FONT HERE")
-        self.loaded_fonts = []
-
+        self.cursors_dir = os.path.join(install_dir, "Cursors")
+        
+        # Tracking variables
+        self.font_vars = {} # {rel_path: BooleanVar}
+        self.cursor_vars = {} # {rel_path: BooleanVar}
+        self.loaded_fonts = [] # List of font paths loaded into memory
+        
         self._setup_ui()
-        self.win.after(100, self._load_and_display_fonts) # Load after window is shown
+        self.win.protocol("WM_DELETE_WINDOW", self.finish_setup)
 
     def _setup_ui(self):
-        header_frame = ttk.Frame(self.win, padding=10)
-        header_frame.pack(fill='x')
-        ttk.Label(header_frame, text="Select a Font", font=("Segoe UI", 16, "bold")).pack()
-        info_text = "Preset fonts are listed below. To add more, place them in the 'Fonts' folder\n" \
-                    "inside the installation directory, then click 'Refresh List'."
-        ttk.Label(header_frame, text=info_text, wraplength=580, justify='center').pack(pady=5)
+        nb = ttk.Notebook(self.win)
+        nb.pack(fill='both', expand=True, padx=10, pady=10)
+
+        ft = ttk.Frame(nb)
+        nb.add(ft, text="Import Fonts")
+        self.f_can = tk.Canvas(ft)
+        sb1 = ttk.Scrollbar(ft, orient="vertical", command=self.f_can.yview)
+        self.f_can.configure(yscrollcommand=sb1.set) # Link scrollbar to canvas
         
-        ttk.Separator(self.win, orient='horizontal').pack(fill='x', padx=10, pady=5)
-
-        main_frame = ttk.Frame(self.win)
-        main_frame.pack(fill='both', expand=True)
-
-        self.canvas = tk.Canvas(main_frame)
-        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=self.canvas.yview)
-        self.scrollable_frame = ttk.Frame(self.canvas, padding=10)
-
-        self.scrollable_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-        self.canvas.configure(yscrollcommand=scrollbar.set)
+        self.f_sf = ttk.Frame(self.f_can)
+        self.f_sf.bind("<Configure>", lambda e: self.f_can.configure(scrollregion=self.f_can.bbox("all")))
+        self.f_can.create_window((0,0), window=self.f_sf, anchor="nw")
         
-        self.canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
-
-        footer_frame = ttk.Frame(self.win, padding=10)
-        footer_frame.pack(fill='x', side='bottom')
-
-        self.status_label = ttk.Label(footer_frame, text="Ready.")
-        self.status_label.pack(side='left', anchor='w')
-
-        button_container = ttk.Frame(footer_frame)
-        button_container.pack(side='right')
-        ttk.Button(button_container, text="I have my own font...", command=self.select_custom_font).pack(side='left')
-        ttk.Button(button_container, text="Refresh List", command=self._load_and_display_fonts).pack(side='left', padx=10)
-        ttk.Button(button_container, text="Finish", command=self._on_close).pack(side='right')
-
-    def _on_mousewheel(self, event):
-        self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-    
-    def _load_and_display_fonts(self):
-        for widget in self.scrollable_frame.winfo_children():
-            widget.destroy()
-        self._unload_fonts()
-
-        if not os.path.exists(self.fonts_dir):
-            os.makedirs(self.fonts_dir)
-
-        font_files = [f for f in os.listdir(self.fonts_dir) if f.lower().endswith(('.ttf', '.otf'))]
-        total_fonts = len(font_files)
-
-        if not font_files:
-            ttk.Label(self.scrollable_frame, text="No fonts found. Add .ttf or .otf files to the 'Fonts' folder.", font=("Segoe UI", 12, "italic")).pack(pady=20)
-            self.status_label.config(text="No fonts found.")
-            return
-
-        gdi32 = ctypes.WinDLL('gdi32')
-        add_font_resource = gdi32.AddFontResourceW
+        sb1.pack(side="right", fill="y") # Pack scrollbar first
+        self.f_can.pack(side="left", fill="both", expand=True)
         
-        for i, font_file in enumerate(sorted(font_files)):
-            self.status_label.config(text=f"Loading {i+1}/{total_fonts}: {font_file}")
-            self.win.update_idletasks() # Force UI update
-
-            font_path = os.path.join(self.fonts_dir, font_file)
-            font_name_no_ext = os.path.splitext(font_file)[0]
-
-            if add_font_resource(font_path):
-                self.loaded_fonts.append(font_path)
-            
-            font_frame = ttk.Frame(self.scrollable_frame, padding=(0, 10))
-            font_frame.pack(fill='x', pady=5)
-            
-            try:
-                ttk.Label(font_frame, text=font_name_no_ext, font=("Segoe UI", 11, "bold")).pack(anchor='w')
-                preview_font = Font(family=font_name_no_ext, size=14)
-                ttk.Label(font_frame, text="AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz", font=preview_font, wraplength=450).pack(anchor='w', pady=2)
-                ttk.Button(font_frame, text="Select", command=lambda p=font_path: self.set_font(p)).pack(anchor='e', pady=5)
-            except tk.TclError:
-                ttk.Label(font_frame, text=f"Could not preview: {font_name_no_ext}", font=("Segoe UI", 10, "italic")).pack(anchor='w')
-            
-            if i < total_fonts - 1:
-                ttk.Separator(font_frame, orient='horizontal').pack(fill='x', pady=10)
+        ct = ttk.Frame(nb)
+        nb.add(ct, text="Import Cursors")
+        self.c_can = tk.Canvas(ct)
+        sb2 = ttk.Scrollbar(ct, orient="vertical", command=self.c_can.yview)
+        self.c_can.configure(yscrollcommand=sb2.set) # Link scrollbar to canvas
         
-        self.status_label.config(text=f"Loaded {total_fonts} fonts.")
-    
-    def set_font(self, font_path):
+        self.c_sf = ttk.Frame(self.c_can)
+        self.c_sf.bind("<Configure>", lambda e: self.c_can.configure(scrollregion=self.c_can.bbox("all")))
+        self.c_can.create_window((0,0), window=self.c_sf, anchor="nw")
+        
+        sb2.pack(side="right", fill="y") # Pack scrollbar first
+        self.c_can.pack(side="left", fill="both", expand=True)
+
+        self._load_items()
+        
+        f = ttk.Frame(self.win, padding=20)
+        f.pack(fill='x', side='bottom')
+        ttk.Button(f, text="Add Custom Font...", command=self.add_custom_font).pack(side='left', padx=5)
+        ttk.Button(f, text="Import Cursor Set...", command=self.add_custom_cursor_set).pack(side='left', padx=5)
+        ttk.Button(f, text="Finish Setup", command=self.finish_setup).pack(side='right')
+
+    def get_font_family_from_file(self, filepath):
+        """Simple parser to extract the family name (ID 1) from the name table of a TTF/OTF"""
         try:
-            for item in os.listdir(self.target_dir):
-                os.remove(os.path.join(self.target_dir, item))
+            with open(filepath, 'rb') as f:
+                data = f.read()
+        except: return None
+        
+        def get_ushort(i): return struct.unpack('>H', data[i:i+2])[0]
+        def get_ulong(i): return struct.unpack('>L', data[i:i+4])[0]
+        
+        if data[:4] not in [b'\x00\x01\x00\x00', b'OTTO', b'true']: return None # Signature check
+        
+        num_tables = get_ushort(4)
+        name_table_offset = 0
+        offset = 12
+        for _ in range(num_tables):
+            tag = data[offset:offset+4]
+            if tag == b'name':
+                name_table_offset = get_ulong(offset+8)
+                break
+            offset += 16
+        
+        if name_table_offset == 0: return None
+        
+        count = get_ushort(name_table_offset + 2)
+        string_offset = get_ushort(name_table_offset + 4) + name_table_offset
+        name_records_offset = name_table_offset + 6
+        
+        family_name = None
+        for i in range(count):
+            rec_off = name_records_offset + i * 12
+            platform_id = get_ushort(rec_off)
+            encoding_id = get_ushort(rec_off + 2)
+            name_id = get_ushort(rec_off + 6)
+            length = get_ushort(rec_off + 8)
+            offset = get_ushort(rec_off + 10)
             
-            shutil.copy(font_path, self.target_dir)
-            font_name = os.path.basename(font_path)
-            messagebox.showinfo("Font Set", f"'{font_name}' has been set as the active custom font.", parent=self.win)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to set font: {e}", parent=self.win)
+            if name_id == 1: # Family Name
+                name_bytes = data[string_offset + offset : string_offset + offset + length]
+                try:
+                    # Windows Unicode (Platform 3, Enc 1)
+                    if platform_id == 3 and encoding_id == 1:
+                        return name_bytes.decode('utf-16-be')
+                    # Mac Roman (Platform 1, Enc 0)
+                    elif platform_id == 1 and encoding_id == 0:
+                        decoded = name_bytes.decode('mac_roman')
+                        # Save as fallback, prefer Windows if found later
+                        if family_name is None: family_name = decoded
+                except: pass
+        return family_name
 
-    def select_custom_font(self):
-        font_path = filedialog.askopenfilename(
-            title="Select a font file",
-            filetypes=[("Font Files", "*.ttf *.otf")],
-            parent=self.win
-        )
-        if font_path:
-            self.set_font(font_path)
+    def load_font_memory(self, path):
+        """Loads font into Windows memory for the session"""
+        try:
+            # AddFontResourceExW flag 0x10 is FR_PRIVATE (process local)
+            res = ctypes.windll.gdi32.AddFontResourceExW(path, 0x10, 0)
+            if res > 0:
+                self.loaded_fonts.append(path)
+                return True
+        except: pass
+        return False
 
-    def _unload_fonts(self):
-        gdi32 = ctypes.WinDLL('gdi32')
-        remove_font_resource = gdi32.RemoveFontResourceW
-        for font_path in self.loaded_fonts:
-            try:
-                remove_font_resource(font_path)
-            except Exception:
-                pass # Fail silently if font can't be unloaded
-        self.loaded_fonts = []
+    def _load_items(self):
+        for widget in self.f_sf.winfo_children(): widget.destroy()
+        for widget in self.c_sf.winfo_children(): widget.destroy()
 
-    def _on_close(self):
-        self._unload_fonts()
+        # Load Fonts recursively
+        if os.path.exists(self.fonts_dir):
+            font_data = []
+            for root, dirs, files in os.walk(self.fonts_dir):
+                for f in files:
+                    if f.lower().endswith(('.ttf', '.otf')):
+                        rel = os.path.relpath(os.path.join(root, f), self.fonts_dir)
+                        full_path = os.path.join(root, f)
+                        font_data.append((rel.replace("\\", "/"), full_path))
+            
+            for rel, path in sorted(font_data, key=lambda x: x[0]):
+                fr = ttk.Frame(self.f_sf); fr.pack(fill='x', pady=5, padx=5)
+                
+                # Checkbox for selection
+                if rel not in self.font_vars:
+                    self.font_vars[rel] = tk.BooleanVar(value=False) # Default to deselected
+                
+                chk = ttk.Checkbutton(fr, text=rel, variable=self.font_vars[rel])
+                chk.pack(side='left', padx=5, anchor='w')
+                
+                # Preview Logic
+                preview_font = ("Segoe UI", 10) # Fallback
+                self.load_font_memory(path)
+                fam = self.get_font_family_from_file(path)
+                if fam:
+                    preview_font = (fam, 14)
+                    
+                lbl = ttk.Label(fr, text="Preview: 123 AaBb", font=preview_font)
+                lbl.pack(side='right', padx=10)
+
+        # Load Cursors recursively
+        if os.path.exists(self.cursors_dir):
+            cursor_sets = []
+            for root, dirs, files in os.walk(self.cursors_dir):
+                if any(f.lower().endswith('.png') for f in files):
+                    if root == self.cursors_dir: continue
+                    rel = os.path.relpath(root, self.cursors_dir)
+                    cursor_sets.append(rel.replace("\\", "/"))
+
+            for d in sorted(cursor_sets):
+                fr = ttk.Frame(self.c_sf); fr.pack(fill='x', pady=2, padx=5)
+                
+                if d not in self.cursor_vars:
+                    self.cursor_vars[d] = tk.BooleanVar(value=True)
+                    
+                ttk.Checkbutton(fr, text=f"Set: {d}", variable=self.cursor_vars[d]).pack(side='left', padx=5)
+                ttk.Label(fr, text="(Contains cursor PNGs)").pack(side='right', padx=5)
+
+    def finish_setup(self):
+        # 1. Cleanup Fonts
+        removed_count = 0
+        for rel, var in self.font_vars.items():
+            if not var.get():
+                path = os.path.join(self.fonts_dir, rel)
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                        removed_count += 1
+                    except: pass
+        
+        # 2. Cleanup Cursors
+        for rel, var in self.cursor_vars.items():
+            if not var.get():
+                path = os.path.join(self.cursors_dir, rel)
+                if os.path.exists(path):
+                    try:
+                        shutil.rmtree(path)
+                        removed_count += 1
+                    except: pass
+        
+        # 3. Cleanup empty folders in Fonts dir
+        for root, dirs, files in os.walk(self.fonts_dir, topdown=False):
+            for name in dirs:
+                try:
+                    os.rmdir(os.path.join(root, name))
+                except: pass
+                
+        if removed_count > 0:
+            messagebox.showinfo("Cleanup", f"Removed {removed_count} unselected items.")
+            
         self.win.destroy()
 
+    def add_custom_font(self):
+        p = filedialog.askopenfilename(filetypes=[("Font Files", "*.ttf *.otf")])
+        if p:
+            try:
+                os.makedirs(self.fonts_dir, exist_ok=True)
+                shutil.copy2(p, os.path.join(self.fonts_dir, os.path.basename(p)))
+                self._load_items()
+                messagebox.showinfo("Success", f"Font '{os.path.basename(p)}' added!")
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def add_custom_cursor_set(self):
+        d = filedialog.askdirectory(title="Select Folder containing ArrowCursor.png, etc.")
+        if d:
+            try:
+                name = os.path.basename(d)
+                dst = os.path.join(self.cursors_dir, name)
+                os.makedirs(dst, exist_ok=True)
+                for f in os.listdir(d):
+                    if f.lower().endswith(".png"):
+                        shutil.copy2(os.path.join(d, f), dst)
+                self._load_items()
+                messagebox.showinfo("Success", f"Cursor set '{name}' imported!")
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
 
 class InstallerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Roblox Font Manager Installer")
-        self.root.geometry("500x300")
-        self.root.resizable(False, False)
-
+        self.root.geometry("500x380")
         self.install_dir = os.path.join(os.getenv('LOCALAPPDATA'), 'RobloxFontManager')
+        self._setup_ui()
 
-        self.main_frame = ttk.Frame(root, padding=20)
-        self.main_frame.pack(fill="both", expand=True)
+    def _setup_ui(self):
+        f = ttk.Frame(self.root, padding=30)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="Roblox Font Manager", font=("Segoe UI", 22, "bold")).pack(pady=10)
+        self.sl = ttk.Label(f, text="System Ready for Installation")
+        self.sl.pack(pady=5)
+        self.pb = ttk.Progressbar(f, length=350, mode='determinate')
+        self.pb.pack(pady=20)
+        self.ib = ttk.Button(f, text="Install Now", command=self.run_install)
+        self.ib.pack(pady=10, ipady=10)
 
-        ttk.Label(self.main_frame, text="Roblox Font Manager", font=("Segoe UI", 20, "bold")).pack(pady=10)
-        ttk.Label(self.main_frame, text="This will install the automatic font manager on your computer.", wraplength=460, justify='center').pack(pady=5)
-        ttk.Label(self.main_frame, text=f"Install Location: {self.install_dir}", wraplength=480, font=("Segoe UI", 8)).pack(pady=15)
-        
-        self.install_button = ttk.Button(self.main_frame, text="Install Now", command=self.run_installation)
-        self.install_button.pack(pady=20, ipady=10, ipadx=20)
-
-        self.progress_frame = ttk.Frame(root, padding=20)
-        ttk.Label(self.progress_frame, text="Installing...", font=("Segoe UI", 16, "bold")).pack(pady=10)
-        self.progress_bar = ttk.Progressbar(self.progress_frame, orient='horizontal', length=300, mode='determinate')
-        self.progress_bar.pack(pady=10)
-        self.status_label = ttk.Label(self.progress_frame, text="Starting...")
-        self.status_label.pack(pady=5)
-
-    def find_python_executable(self):
-        self.update_status("Finding Python installation...")
+    def run_install(self):
+        self.ib.config(state='disabled')
         try:
-            # Use 'where python' and take the first valid result
-            output = subprocess.check_output('where python', shell=True, text=True, stderr=subprocess.PIPE)
-            paths = output.strip().split('\n')
-            if paths:
-                py_exe = paths[0].strip()
-                print(f"Found Python using 'where' command: {py_exe}")
-                return py_exe
-        except subprocess.CalledProcessError:
-            print("'where python' command failed. Trying manual search...")
-
-        # Fallback to manual search if 'where' fails
-        common_paths = [
-            os.path.join(os.getenv('LOCALAPPDATA'), 'Programs', 'Python'),
-            os.path.join(os.getenv('ProgramFiles'), 'Python')
-        ]
-        for path in common_paths:
-            if os.path.isdir(path):
-                for folder in os.listdir(path):
-                    if folder.lower().startswith('python'):
-                        py_exe = os.path.join(path, folder, 'python.exe')
-                        if os.path.exists(py_exe):
-                            print(f"Found Python via manual search: {py_exe}")
-                            return py_exe
-        
-        return None
-
-    def create_desktop_shortcut(self, pythonw_exe):
-        self.update_status("Creating desktop shortcut...")
-        script_path = os.path.join(self.install_dir, 'manager.py')
-        desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
-        shortcut_path = os.path.join(desktop_path, 'Roblox Font Manager.lnk')
-        
-        vbs_content = f'''
-        Set oWS = WScript.CreateObject("WScript.Shell")
-        sLinkFile = "{shortcut_path}"
-        Set oLink = oWS.CreateShortcut(sLinkFile)
-        oLink.TargetPath = "{pythonw_exe}"
-        oLink.Arguments = Chr(34) & "{script_path}" & Chr(34)
-        oLink.WorkingDirectory = "{self.install_dir}"
-        oLink.Save
-        '''
-        vbs_path = os.path.join(os.getenv('TEMP'), 'create_shortcut.vbs')
-        with open(vbs_path, 'w', encoding='utf-8') as f:
-            f.write(vbs_content)
-        
-        subprocess.call(['cscript', vbs_path], creationflags=subprocess.CREATE_NO_WINDOW)
-        os.remove(vbs_path)
-
-    def run_installation(self):
-        self.main_frame.pack_forget()
-        self.progress_frame.pack(fill="both", expand=True)
-        self.root.update_idletasks()
-        
-        try:
-            print("--- Starting Roblox Font Manager Installation ---")
-            self.progress_bar['value'] = 0
-
-            if getattr(sys, 'frozen', False):
-                installer_dir = os.path.dirname(sys.executable)
-            else:
-                installer_dir = os.path.dirname(os.path.abspath(__file__))
-
-            source_fonts_zip = os.path.join(installer_dir, 'Fonts.zip')
+            # 0. Kill existing instances to prevent conflicts/locks
+            subprocess.call('taskkill /F /IM pythonw.exe /FI "WINDOWTITLE eq Roblox Font & Cursor Manager" >nul 2>&1', shell=True)
             
-            print(f"Installer is running from: {installer_dir}")
-            print(f"Checking for preset fonts at: {source_fonts_zip}")
+            out = subprocess.check_output('where python', shell=True, text=True)
+            py = out.strip().split('\n')[0].strip()
+            pyw = py.replace('python.exe', 'pythonw.exe')
             
-            has_fonts_zip = os.path.isfile(source_fonts_zip)
-
-            if not has_fonts_zip:
-                messagebox.showwarning("No Fonts Found", "A 'Fonts.zip' file was not found next to the installer.\n\nThe program will be installed, but you will need to add fonts manually later.")
+            os.makedirs(self.install_dir, exist_ok=True)
+            os.makedirs(os.path.join(self.install_dir, "Fonts"), exist_ok=True)
+            os.makedirs(os.path.join(self.install_dir, "Cursors"), exist_ok=True)
             
-            # Step 1: Find Python (10%)
-            python_exe = self.find_python_executable()
-            if not python_exe: raise Exception("Could not find a Python installation. Please install Python from python.org or the Microsoft Store and try again.")
-            pythonw_exe = python_exe.replace('python.exe', 'pythonw.exe')
-            if not os.path.exists(pythonw_exe): raise Exception(f"pythonw.exe not found alongside {python_exe}")
-            self.progress_bar['value'] = 10; self.root.update_idletasks(); time.sleep(0.2)
-
-            # Step 2: Create Directories (20%)
-            self.update_status("Creating directories...")
-            os.makedirs(os.path.join(self.install_dir, "PLACE YOUR CUSTOM FONT HERE"), exist_ok=True)
-            destination_fonts_dir = os.path.join(self.install_dir, "Fonts")
-            os.makedirs(destination_fonts_dir, exist_ok=True)
-            self.progress_bar['value'] = 20; self.root.update_idletasks(); time.sleep(0.2)
-
-            # Step 3: Extract and Copy Preset Fonts (40%)
-            self.update_status("Extracting preset fonts...")
+            self.pb['value'] = 20
+            self.sl.config(text="Extracting local assets...")
+            bd = os.path.dirname(os.path.abspath(__file__))
             
-            if has_fonts_zip:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    print(f"-> Found and extracting: Fonts.zip")
-                    try:
-                        with zipfile.ZipFile(source_fonts_zip, 'r') as zip_ref:
-                            zip_ref.extractall(temp_dir)
-                    except zipfile.BadZipFile:
-                        print(f"   [WARNING] Skipping corrupted zip file: Fonts.zip")
+            # 1. Handle Fonts: Flatten extraction + Nested Zip Support
+            zp_fonts = os.path.join(bd, "Fonts.zip")
+            if os.path.exists(zp_fonts):
+                fonts_dest = os.path.join(self.install_dir, "Fonts")
+                with zipfile.ZipFile(zp_fonts, 'r') as z:
+                    for member in z.infolist():
+                        # Check for direct font files
+                        if not member.is_dir() and member.filename.lower().endswith(('.ttf', '.otf')):
+                            source = z.open(member)
+                            target_file = os.path.join(fonts_dest, os.path.basename(member.filename))
+                            with open(target_file, "wb") as dest:
+                                shutil.copyfileobj(source, dest)
+                            source.close()
+                        
+                        # Check for nested zip files (e.g. Fonts/Font1.zip)
+                        elif not member.is_dir() and member.filename.lower().endswith('.zip'):
+                            # Extract the nested zip to a temp file
+                            temp_zip_path = os.path.join(self.install_dir, f"temp_{os.path.basename(member.filename)}")
+                            with open(temp_zip_path, "wb") as f:
+                                shutil.copyfileobj(z.open(member), f)
+                            
+                            # Open the nested zip and extract fonts from it
+                            try:
+                                with zipfile.ZipFile(temp_zip_path, 'r') as nested_z:
+                                    for nested_member in nested_z.infolist():
+                                        if not nested_member.is_dir() and nested_member.filename.lower().endswith(('.ttf', '.otf')):
+                                            source = nested_z.open(nested_member)
+                                            target_file = os.path.join(fonts_dest, os.path.basename(nested_member.filename))
+                                            with open(target_file, "wb") as dest:
+                                                shutil.copyfileobj(source, dest)
+                                            source.close()
+                            except zipfile.BadZipFile:
+                                pass
+                            finally:
+                                if os.path.exists(temp_zip_path):
+                                    try: os.remove(temp_zip_path)
+                                    except: pass
 
-                    copied_count = 0
-                    for root, _, files in os.walk(temp_dir):
-                        for file in files:
-                            if file.lower().endswith(('.ttf', '.otf')):
-                                try:
-                                    shutil.copy(os.path.join(root, file), destination_fonts_dir)
-                                    copied_count += 1
-                                except shutil.SameFileError:
-                                    pass
-                    print(f"-> Copied {copied_count} fonts from Fonts.zip.")
-            else:
-                print("-> No 'Fonts.zip' found. Skipping preset font copy.")
+            # 2. Handle Cursors: Standard extract (Preserve folder structure for sets)
+            zp_cursors = os.path.join(bd, "Cursors.zip")
+            if os.path.exists(zp_cursors):
+                cursors_dest = os.path.join(self.install_dir, "Cursors")
+                with zipfile.ZipFile(zp_cursors, 'r') as z:
+                    z.extractall(cursors_dest)
 
-            self.progress_bar['value'] = 40; self.root.update_idletasks(); time.sleep(0.2)
-            
-            # Step 4: Write Scripts (55%)
-            self.update_status("Writing script files...")
+            self.pb['value'] = 40
+            self.sl.config(text="Installing dependencies...")
+            subprocess.check_call([py, "-m", "pip", "install", "psutil"], creationflags=subprocess.CREATE_NO_WINDOW)
+
+            self.pb['value'] = 60
+            self.sl.config(text="Deploying system files...")
             with open(os.path.join(self.install_dir, 'auto_font_manager.py'), 'w', encoding='utf-8') as f: f.write(AUTO_MANAGER_CODE)
             with open(os.path.join(self.install_dir, 'manager.py'), 'w', encoding='utf-8') as f: f.write(MANAGER_HUB_CODE)
-            self.progress_bar['value'] = 55; self.root.update_idletasks(); time.sleep(0.2)
             
-            # Step 5: Install Dependency (75%)
-            self.update_status("Installing required libraries (psutil)...")
-            subprocess.check_call([python_exe, "-m", "pip", "install", "psutil"], creationflags=subprocess.CREATE_NO_WINDOW)
-            self.progress_bar['value'] = 75; self.root.update_idletasks(); time.sleep(0.2)
+            self.pb['value'] = 80
+            self.create_shortcut(pyw, os.path.join(self.install_dir, 'manager.py'))
 
-            # Step 6: Create Startup VBS (85%)
-            self.update_status("Setting up auto-start...")
-            vbs_path = os.path.join(os.getenv('APPDATA'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'launch_roblox_font_manager.vbs')
-            script_to_run = os.path.join(self.install_dir, 'auto_font_manager.py')
-            vbs_content = f'Set WshShell = CreateObject("WScript.Shell")\nWshShell.Run """{pythonw_exe}"" ""{script_to_run}""", 0, false'
-            with open(vbs_path, 'w', encoding='utf-8') as f: f.write(vbs_content)
-            self.progress_bar['value'] = 85; self.root.update_idletasks(); time.sleep(0.2)
-            
-            # Step 7: Create Desktop Shortcut (95%)
-            self.create_desktop_shortcut(pythonw_exe)
-            self.progress_bar['value'] = 95; self.root.update_idletasks(); time.sleep(0.2)
+            vbs = os.path.join(os.getenv('APPDATA'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'launch_roblox_font_manager.vbs')
+            with open(vbs, 'w') as f:
+                f.write(f'Set oWS = CreateObject("WScript.Shell")\n')
+                f.write(f'oWS.Run """{pyw}"" ""{os.path.join(self.install_dir, "auto_font_manager.py")}""", 0, false')
 
-            # Step 8: Finalize (100%)
-            self.update_status("Installation complete!")
-            self.progress_bar['value'] = 100
-            print("--- Installation Successful ---")
-            
-            messagebox.showinfo("Success", "Installation successful! The font selector will now open.")
-            
+            self.pb['value'] = 100
+            messagebox.showinfo("Success", "Installation complete! Library items from local zip files have been extracted.")
             self.root.destroy()
-            root = tk.Tk()
-            root.withdraw()
-            FontChooserApp(root, self.install_dir)
-            root.mainloop()
-
+            
+            # Run the library setup window
+            nr = tk.Tk(); nr.withdraw(); FontChooserApp(nr, self.install_dir); nr.mainloop()
+            
+            # CRITICAL FIX: Launch the background manager immediately after setup closes
+            if os.path.exists(vbs):
+                subprocess.Popen(f'cscript //Nologo "{vbs}"', shell=True, creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW)
+            
         except Exception as e:
-            print(f"\n--- INSTALLATION FAILED ---\n{traceback.format_exc()}")
-            messagebox.showerror("Installation Failed", f"An error occurred:\n\n{e}\n\nPlease check the console window for more details.")
-            self.progress_frame.pack_forget()
-            self.main_frame.pack(fill="both", expand=True)
+            self.ib.config(state='normal')
+            messagebox.showerror("Installation Failed", str(e))
 
-    def update_status(self, text):
-        self.status_label['text'] = text
-        print(text)
-        self.root.update_idletasks()
-
-
-def handle_exception(exc_type, exc_value, exc_traceback):
-    """A global exception handler to catch crashes."""
-    error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-    messagebox.showerror("Critical Error", f"An unexpected error occurred:\n\n{error_msg}")
-    if sys.__excepthook__:
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
-
+    def create_shortcut(self, pyw, script):
+        target = os.path.join(os.path.expanduser("~"), "Desktop", "Roblox Font Manager Hub.lnk")
+        vbs = os.path.join(os.getenv('TEMP'), 'create_lnk.vbs')
+        with open(vbs, 'w') as f:
+            f.write(f'Set oWS = WScript.CreateObject("WScript.Shell")\nsLinkFile = "{target}"\n')
+            f.write(f'Set oLink = oWS.CreateShortcut(sLinkFile)\noLink.TargetPath = "{pyw}"\n')
+            f.write(f'oLink.Arguments = """{script}"""\noLink.WorkingDirectory = "{self.install_dir}"\noLink.Save')
+        subprocess.call(['cscript', vbs], creationflags=subprocess.CREATE_NO_WINDOW)
 
 if __name__ == "__main__":
-    sys.excepthook = handle_exception
-    
-    try:
-        root = tk.Tk()
-        app = InstallerApp(root)
-        root.mainloop()
-    except Exception:
-        handle_exception(*sys.exc_info())
-
+    root = tk.Tk()
+    app = InstallerApp(root)
+    root.mainloop()
