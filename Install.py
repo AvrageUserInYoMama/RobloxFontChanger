@@ -22,7 +22,7 @@ import ctypes
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext, font as tkfont
+from tkinter import ttk, messagebox, scrolledtext, font as tkfont, filedialog
 from datetime import datetime
 from ctypes import wintypes
 import time
@@ -151,8 +151,8 @@ class ManagerUI(tk.Tk):
         self.refresh_libraries()
         
         # Start loops
-        self.check_hotkey_trigger() # Runs fast (100ms)
-        self.check_roblox_process() # Runs slow (2000ms)
+        self.check_hotkey_trigger() # Runs fast
+        self.check_roblox_process() # Runs slow
         
         # Start hotkey thread
         threading.Thread(target=self.hotkey_thread_runner, daemon=True).start()
@@ -225,7 +225,7 @@ class ManagerUI(tk.Tk):
         self.c_list['values'] = sorted(list(self.all_cursor_sets.keys()))
 
     def add_font_manually(self):
-        f = filedialog.askopenfilename(filetypes=[("Font Files", "*.ttf *.otf")])
+        f = filedialog.askopenfilename(parent=self, filetypes=[("Font Files", "*.ttf *.otf")])
         if f:
             os.makedirs(FONTS_LIB_DIR, exist_ok=True)
             name = os.path.basename(f)
@@ -238,7 +238,7 @@ class ManagerUI(tk.Tk):
             except Exception as e: messagebox.showerror("Error", str(e))
 
     def add_cursor_set_manually(self):
-        d = filedialog.askdirectory(title="Select Folder containing Cursor PNGs")
+        d = filedialog.askdirectory(parent=self, title="Select Folder containing Cursor PNGs")
         if d:
             name = os.path.basename(d)
             dst = os.path.join(CURSORS_LIB_DIR, name)
@@ -250,29 +250,38 @@ class ManagerUI(tk.Tk):
             messagebox.showinfo("Set Added", "Cursor set imported.")
 
     def hotkey_thread_runner(self):
+        # Polling implementation using GetAsyncKeyState
+        # This is more robust against Game Overlays and UIPI (User Interface Privilege Isolation)
         user32 = ctypes.windll.user32
-        msg = wintypes.MSG()
+        was_pressed = False
         
         while True:
             # Use thread-safe variable instead of Tkinter var
             hk_name = self.cur_hotkey_val
             
             if hk_name in KEYS_MAP:
-                mod, vk = KEYS_MAP[hk_name]
-                user32.UnregisterHotKey(None, HOTKEY_ID)
-                success = user32.RegisterHotKey(None, HOTKEY_ID, mod | MOD_NOREPEAT, vk)
-                if not success:
-                    print(f"Failed to register hotkey: {hk_name}")
-
-            # GetMessageW is blocking, but will wake on hotkey press
-            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
-                if msg.message == 0x0312: # WM_HOTKEY
-                    self.trigger_show = True
+                mod_req, vk = KEYS_MAP[hk_name]
                 
-                # Check if hotkey setting changed in UI
-                if self.cur_hotkey_val != hk_name:
-                    break
-            time.sleep(1)
+                # Check Main Key state (MSB set = down)
+                # Ensure we are checking bit 15 (0x8000)
+                key_state = user32.GetAsyncKeyState(vk)
+                key_down = (key_state & 0x8000) != 0
+                
+                # Check Modifiers (if Ctrl is required)
+                mods_ok = True
+                if mod_req & MOD_CONTROL:
+                    # Check VK_CONTROL (0x11)
+                    if (user32.GetAsyncKeyState(0x11) & 0x8000) == 0:
+                        mods_ok = False
+                
+                if key_down and mods_ok:
+                    if not was_pressed:
+                        self.trigger_show = True
+                        was_pressed = True
+                else:
+                    was_pressed = False
+            
+            time.sleep(0.02) # Faster poll (20ms) to catch quick presses
 
     def on_hotkey_change(self, event):
         self.cfg["hotkey"] = self.hotkey_var.get()
@@ -374,6 +383,7 @@ class ManagerUI(tk.Tk):
         self.attributes("-topmost", True)
         self.lift()
         self.focus_force()
+        self.update() # Force update
         try:
             hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
             ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -562,7 +572,8 @@ class FontChooserApp:
                 
                 # Checkbox for selection
                 if rel not in self.font_vars:
-                    self.font_vars[rel] = tk.BooleanVar(value=False) # Default to deselected
+                    # FIX: Default to False (unchecked) for initial library items
+                    self.font_vars[rel] = tk.BooleanVar(value=False) 
                 
                 chk = ttk.Checkbutton(fr, text=rel, variable=self.font_vars[rel])
                 chk.pack(side='left', padx=5, anchor='w')
@@ -589,10 +600,26 @@ class FontChooserApp:
             for d in sorted(cursor_sets):
                 fr = ttk.Frame(self.c_sf); fr.pack(fill='x', pady=2, padx=5)
                 
+                # --- CHANGE START ---
+                is_mandatory = (d == "Normal")
+
                 if d not in self.cursor_vars:
-                    self.cursor_vars[d] = tk.BooleanVar(value=True)
-                    
-                ttk.Checkbutton(fr, text=f"Set: {d}", variable=self.cursor_vars[d]).pack(side='left', padx=5)
+                    # FIX: Default to False (unchecked) for initial library items
+                    # But if it's "Normal", default to True
+                    self.cursor_vars[d] = tk.BooleanVar(value=is_mandatory)
+                
+                # If it's Normal, ensure it stays True even if somehow set to False previously
+                if is_mandatory:
+                     self.cursor_vars[d].set(True)
+
+                chk = ttk.Checkbutton(fr, text=f"Set: {d}", variable=self.cursor_vars[d])
+                
+                # Disable the checkbox if it is mandatory
+                if is_mandatory:
+                    chk.configure(state='disabled')
+                # --- CHANGE END ---
+                
+                chk.pack(side='left', padx=5, anchor='w')
                 ttk.Label(fr, text="(Contains cursor PNGs)").pack(side='right', padx=5)
 
     def finish_setup(self):
@@ -634,9 +661,14 @@ class FontChooserApp:
         if p:
             try:
                 os.makedirs(self.fonts_dir, exist_ok=True)
-                shutil.copy2(p, os.path.join(self.fonts_dir, os.path.basename(p)))
+                filename = os.path.basename(p)
+                shutil.copy2(p, os.path.join(self.fonts_dir, filename))
+                
+                # FIX: Explicitly set this specific custom font to True (ticked)
+                self.font_vars[filename] = tk.BooleanVar(value=True)
+
                 self._load_items()
-                messagebox.showinfo("Success", f"Font '{os.path.basename(p)}' added!")
+                messagebox.showinfo("Success", f"Font '{filename}' added!")
             except Exception as e:
                 messagebox.showerror("Error", str(e))
 
@@ -650,6 +682,10 @@ class FontChooserApp:
                 for f in os.listdir(d):
                     if f.lower().endswith(".png"):
                         shutil.copy2(os.path.join(d, f), dst)
+                
+                # FIX: Explicitly set this specific custom cursor set to True (ticked)
+                self.cursor_vars[name] = tk.BooleanVar(value=True)
+
                 self._load_items()
                 messagebox.showinfo("Success", f"Cursor set '{name}' imported!")
             except Exception as e:
