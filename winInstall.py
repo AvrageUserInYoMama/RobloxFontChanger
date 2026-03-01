@@ -10,6 +10,7 @@ import zipfile
 import time
 import struct
 import logging
+from datetime import datetime
 
 # --- THEME CONSTANTS (Bloxstrap Inspired) ---
 BG_COLOR = "#111111"
@@ -169,7 +170,7 @@ def apply_font(font_path):
 def apply_cursor_set(set_path):
     log(f"Applying Cursor Set: {set_path}")
     versions = get_roblox_version_paths()
-    c_files = ["ArrowCursor.png", "ArrowFarCursor.png", "IBeamCursor.png"]
+    c_files = ["ArrowCursor.png", "ArrowFarCursor.png", "IBeamCursor.png", "MouseLockedCursor.png", "MouseLockedCursor@2x.png"]
     
     success = False
     for v_path in versions:
@@ -322,7 +323,7 @@ class ManagerUI(tk.Tk):
             
             # Init preview if a cursor is already selected
             self.update_cursor_preview()
-            self.refresh_libraries()
+            self.refresh_libraries() # Fix for tab switching missing library
 
         elif name == "Settings":
             tk.Label(page, text="Activation Hotkey", bg=BG_COLOR, fg=TEXT_SECONDARY).pack(anchor="w")
@@ -351,7 +352,7 @@ class ManagerUI(tk.Tk):
         sc = self.cursor_var.get()
         if sc and sc in self.all_cursor_sets:
             set_path = self.all_cursor_sets[sc]
-            c_files = ["ArrowCursor.png", "ArrowFarCursor.png", "IBeamCursor.png"]
+            c_files = ["ArrowCursor.png", "ArrowFarCursor.png", "IBeamCursor.png", "MouseLockedCursor.png", "MouseLockedCursor@2x.png"]
             
             for cf in c_files:
                 img_path = os.path.join(set_path, cf)
@@ -726,7 +727,7 @@ class FontChooserApp:
             preview_frame.pack(side="right", padx=10)
             
             set_path = os.path.join(self.cursors_dir, d)
-            c_files = ["ArrowCursor.png", "ArrowFarCursor.png", "IBeamCursor.png"]
+            c_files = ["ArrowCursor.png", "ArrowFarCursor.png", "IBeamCursor.png", "MouseLockedCursor.png", "MouseLockedCursor@2x.png"]
             
             for cf in c_files:
                 img_path = os.path.join(set_path, cf)

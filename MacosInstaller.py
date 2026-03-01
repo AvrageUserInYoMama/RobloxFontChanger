@@ -44,7 +44,7 @@ def installer_handle_error(error_msg, tb_info=""):
         
         if choice == "Issues page":
             install_log("User clicked 'Issues page'")
-            webbrowser.open("https://github.com/AvrageUserInYoMama/RobloxFontChanger/issues") # Updated URL
+            webbrowser.open("https://github.com/AvrageUserInYoMama/RobloxFontChanger/issues")
         elif choice == "Copy Logs":
             install_log("User clicked 'Copy Logs'")
             log_data = "No logs found."
@@ -126,7 +126,7 @@ def handle_global_error(error_msg, tb_info=""):
         
         if choice == "Issues page":
             log("User clicked 'Issues page'")
-            webbrowser.open("https://github.com/AvrageUserInYoMama/RobloxFontChanger/issues") # Updated URL
+            webbrowser.open("https://github.com/AvrageUserInYoMama/RobloxFontChanger/issues")
         elif choice == "Copy Logs":
             log("User clicked 'Copy Logs'")
             log_data = "No logs found."
@@ -284,7 +284,7 @@ def apply_cursor_set(set_path):
     log(f"Executing apply_cursor_set() for: {set_path}")
     try:
         versions = get_roblox_version_paths()
-        c_files = ["ArrowCursor.png", "ArrowFarCursor.png", "IBeamCursor.png"]
+        c_files = ["ArrowCursor.png", "ArrowFarCursor.png", "IBeamCursor.png", "MouseLockedCursor.png", "MouseLockedCursor@2x.png"]
         
         success = False
         for v_path in versions:
@@ -506,7 +506,7 @@ class ManagerUI(tk.Tk):
             sc = self.cursor_var.get()
             if sc and sc in self.all_cursor_sets:
                 set_path = self.all_cursor_sets[sc]
-                c_files = ["ArrowCursor.png", "ArrowFarCursor.png", "IBeamCursor.png"]
+                c_files = ["ArrowCursor.png", "ArrowFarCursor.png", "IBeamCursor.png", "MouseLockedCursor.png", "MouseLockedCursor@2x.png"]
                 
                 for cf in c_files:
                     img_path = os.path.join(set_path, cf)
@@ -671,7 +671,6 @@ class ManagerUI(tk.Tk):
                 
             self.prev_run = running
         except Exception as e: 
-            # Silence log spam in the loop unless it's a catastrophic issue
             pass
         self.after(2000, self.check_roblox_process)
 
@@ -770,7 +769,6 @@ if __name__ == "__main__":
         ttk.Button(root, text="Close", command=root.destroy).pack(pady=10)
         root.mainloop()
     except Exception as e:
-        # Fallback print if Tkinter crashes entirely on hub launch
         print(f"Hub Fatal Error: {e}")
 '''
 
@@ -952,7 +950,7 @@ class FontChooserApp:
                 preview_frame.pack(side="right", padx=10)
                 
                 set_path = os.path.join(self.cursors_dir, d)
-                c_files = ["ArrowCursor.png", "ArrowFarCursor.png", "IBeamCursor.png"]
+                c_files = ["ArrowCursor.png", "ArrowFarCursor.png", "IBeamCursor.png", "MouseLockedCursor.png", "MouseLockedCursor@2x.png"]
                 
                 for cf in c_files:
                     img_path = os.path.join(set_path, cf)
