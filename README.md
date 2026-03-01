@@ -60,6 +60,7 @@ V3.1: fixed the menu not showing up on hotkey and fixed the old cursor set
 V3.5: New Sleek Ui update, added coloured cursors, to both versions, macos installer is still in bata!!
 
 V3.6 Added shiftlock to cursor sets 
+V3.61 oops i broke it, also made the windows resizeable
 
 ## Note: The versions 1-3.1 arent getting support for issues, please use V3.5+!
 
@@ -72,6 +73,7 @@ Anything else
 
 
 Please read other issue tickets and this whole file before making an issue as it may already be solved!
+
 
 
 
