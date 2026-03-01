@@ -175,12 +175,20 @@ def apply_cursor_set(set_path):
     success = False
     for v_path in versions:
         cursor_dir = os.path.join(v_path, "content", "textures", "Cursors", "KeyboardMouse")
+        texture_dir = os.path.join(v_path, "content", "textures") # For MouseLocked
+        
         if os.path.exists(cursor_dir):
             backup_dir = os.path.join(cursor_dir, "Cursors.old")
             os.makedirs(backup_dir, exist_ok=True)
             for cf in c_files:
                 lib_file = os.path.join(set_path, cf)
-                target = os.path.join(cursor_dir, cf)
+                
+                # Fix: Target depends on if it's the shift lock cursor
+                if "MouseLocked" in cf:
+                    target = os.path.join(texture_dir, cf)
+                else:
+                    target = os.path.join(cursor_dir, cf)
+                
                 if os.path.exists(lib_file):
                     try:
                         if os.path.exists(target) and not os.path.exists(os.path.join(backup_dir, cf)):
@@ -214,10 +222,13 @@ def restore_defaults():
             
         # Restore Cursors
         c_old = os.path.join(v_path, "content", "textures", "Cursors", "KeyboardMouse", "Cursors.old")
+        c_dest_km = os.path.join(v_path, "content", "textures", "Cursors", "KeyboardMouse")
+        t_dest = os.path.join(v_path, "content", "textures")
+        
         if os.path.exists(c_old):
-            c_dest = os.path.join(v_path, "content", "textures", "Cursors", "KeyboardMouse")
             for f in os.listdir(c_old):
-                try: shutil.move(os.path.join(c_old, f), os.path.join(c_dest, f))
+                dest = t_dest if "MouseLocked" in f else c_dest_km
+                try: shutil.move(os.path.join(c_old, f), os.path.join(dest, f))
                 except: pass
             shutil.rmtree(c_old)
 
@@ -227,9 +238,9 @@ class ManagerUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_NAME)
-        self.geometry("800x650")
+        self.geometry("1000x700")
         self.configure(bg=BG_COLOR)
-        self.resizable(False, False)
+        self.resizable(True, True)
 
         self.cfg = load_config()
         self.trigger_show = False
@@ -579,8 +590,9 @@ class FontChooserApp:
     def __init__(self, parent, install_dir):
         self.win = tk.Toplevel(parent)
         self.win.title("Step 2: Setup Your Library")
-        self.win.geometry("850x650")
+        self.win.geometry("1000x700")
         self.win.configure(bg=BG_COLOR)
+        self.win.resizable(True, True)
         
         self.install_dir = install_dir
         self.fonts_dir = os.path.join(install_dir, "Fonts")

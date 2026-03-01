@@ -289,7 +289,9 @@ def apply_cursor_set(set_path):
         success = False
         for v_path in versions:
             cursor_dir = os.path.join(v_path, "content", "textures", "Cursors", "KeyboardMouse")
+            texture_dir = os.path.join(v_path, "content", "textures")
             log(f"Target cursor directory: {cursor_dir}")
+            
             if os.path.exists(cursor_dir):
                 if not check_permissions(cursor_dir):
                     log("Permission Denied: Cannot write to Roblox cursor folder.")
@@ -301,7 +303,11 @@ def apply_cursor_set(set_path):
                 
                 for cf in c_files:
                     lib_file = os.path.join(set_path, cf)
-                    target = os.path.join(cursor_dir, cf)
+                    if "MouseLocked" in cf:
+                        target = os.path.join(texture_dir, cf)
+                    else:
+                        target = os.path.join(cursor_dir, cf)
+                        
                     log(f"Processing cursor file: {cf}, Target: {target}")
                     if os.path.exists(lib_file):
                         try:
@@ -347,11 +353,13 @@ def restore_defaults():
             c_old = os.path.join(v_path, "content", "textures", "Cursors", "KeyboardMouse", "Cursors.old")
             log(f"Checking for cursor backup: {c_old}")
             if os.path.exists(c_old):
-                c_dest = os.path.join(v_path, "content", "textures", "Cursors", "KeyboardMouse")
-                if check_permissions(c_dest):
+                c_dest_km = os.path.join(v_path, "content", "textures", "Cursors", "KeyboardMouse")
+                t_dest = os.path.join(v_path, "content", "textures")
+                if check_permissions(c_dest_km) and check_permissions(t_dest):
                     log("Restoring cursors from backup...")
                     for f in os.listdir(c_old):
-                        try: shutil.move(os.path.join(c_old, f), os.path.join(c_dest, f))
+                        dest = t_dest if "MouseLocked" in f else c_dest_km
+                        try: shutil.move(os.path.join(c_old, f), os.path.join(dest, f))
                         except Exception as move_e: log(f"Failed to restore {f}: {move_e}")
                     shutil.rmtree(c_old)
                     log("Cursors restored.")
@@ -366,9 +374,9 @@ class ManagerUI(tk.Tk):
         try:
             super().__init__()
             self.title(APP_NAME)
-            self.geometry("800x650")
+            self.geometry("1000x700")
             self.configure(bg=BG_COLOR)
-            self.resizable(False, False)
+            self.resizable(True, True)
 
             self.cfg = load_config()
             self.trigger_show = False
@@ -671,6 +679,7 @@ class ManagerUI(tk.Tk):
                 
             self.prev_run = running
         except Exception as e: 
+            # Silence log spam in the loop unless it's a catastrophic issue
             pass
         self.after(2000, self.check_roblox_process)
 
@@ -787,8 +796,9 @@ class FontChooserApp:
         try:
             self.win = tk.Toplevel(parent)
             self.win.title("Step 2: Setup Your Library")
-            self.win.geometry("850x650")
+            self.win.geometry("1000x700")
             self.win.configure(bg=BG_COLOR)
+            self.win.resizable(True, True)
             
             self.install_dir = install_dir
             self.fonts_dir = os.path.join(install_dir, "Fonts")
@@ -920,7 +930,8 @@ class FontChooserApp:
                         if not search_query or search_query in rel.lower():
                             font_data.append((rel, os.path.join(root, f)))
             
-            for rel, path in sorted(font_data):
+            max_items = 250
+            for rel, path in sorted(font_data)[:max_items]:
                 card = tk.Frame(frame, bg=SECONDARY_BG, padx=15, pady=10)
                 card.pack(fill="x", pady=5)
                 if rel not in self.font_vars: self.font_vars[rel] = tk.BooleanVar(self.win, value=False)
@@ -931,6 +942,9 @@ class FontChooserApp:
                 
                 fam = self.font_meta_cache[path]
                 tk.Label(card, text="AaBb 123", font=(fam, 14), bg=SECONDARY_BG, fg=TEXT_PRIMARY).pack(side="right", padx=10)
+            
+            if len(font_data) > max_items:
+                tk.Label(frame, text=f"...and {len(font_data) - max_items} more fonts. Use the search bar to find them!", bg=BG_COLOR, fg=TEXT_SECONDARY, font=("Segoe UI", 10, "italic")).pack(pady=20)
         except Exception as e:
             installer_handle_error(f"_render_fonts crashed: {e}", traceback.format_exc())
 
