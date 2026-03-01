@@ -1,7 +1,7 @@
-### **How to Use**
+# **How to Use**
 
-
-Open The Installer
+## WINDOWS
+Open The Win Installer
 Press Install
 Select Fonts and Cursors Of Your Choice Or Upload Your Own
 Press Finish
@@ -10,16 +10,26 @@ Restart/Shut down Your PC
 
 If It Freezes At Anytime DO NOT Close It.
 
+## MAC OS
 
+Open The Macos Installer
+Press Install
+Select Fonts and Cursors Of Your Choice Or Upload Your Own
+Press Finish
 
-**Info**
+Restart/Shut down Your Laptop
+
+REPORT ISSUES PLEASE
+
+the win installer wont work on mac, The mac installer wont work on windows
+# **Info**
 
 
 Pess F9 to open the font menu (key can be changed)
 
 You can disable it from opening on roblox startup
 
-Report Bugs In The Comments
+Report Bugs on the reports page
 
 When you press finish, if the cmd window does not go away just close it.
 
@@ -32,7 +42,7 @@ Folder
 
 
 
-**Updates**
+# **Updates**
 
 
 
@@ -43,6 +53,9 @@ V2: Added "laptop" support and more realistic loading bar
 V3: Added Cursors And Multiple Fonts At Once Support
 
 V3.1: fixed the menu not showing up on hotkey and fixed the old cursor set 
+
+V3.5: New Sleek Ui update, added coloured cursors, to both versions, macos installer is still in bata!!
+
 
 
 
