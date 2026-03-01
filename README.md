@@ -1,5 +1,7 @@
 # **How to Use**
 
+(guess what, you need python [a shocker i know])
+
 ## WINDOWS
 Open The Win Installer
 Press Install
@@ -60,6 +62,16 @@ V3.5: New Sleek Ui update, added coloured cursors, to both versions, macos insta
 V3.6 Added shiftlock to cursor sets 
 
 ## Note: The versions 1-3.1 arent getting support for issues, please use V3.5+!
+
+the UI and code are very buggy (i am awear) So i have redone it all. When reporting an error make sure to say:
+
+What version your one
+Logs
+When the issue happened
+Anything else
+
+
+Please read other issue tickets and this whole file before making an issue as it may already be solved!
 
 
 
