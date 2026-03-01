@@ -1,4 +1,4 @@
-######**How to Use**
+###**How to Use**
 
 
 Open The Installer
@@ -43,6 +43,7 @@ V2: Added "laptop" support and more realistic loading bar
 V3: Added Cursors And Multiple Fonts At Once Support
 
 V3.1: fixed the menu not showing up on hotkey and fixed the old cursor set 
+
 
 
 
